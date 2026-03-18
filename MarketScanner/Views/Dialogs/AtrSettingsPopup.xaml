@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<toolkit:Popup xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+               xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+               xmlns:toolkit="http://schemas.microsoft.com/dotnet/2022/maui/toolkit"
+               x:Class="MarketScanner.Views.Dialogs.AtrSettingsPopup"
+               Color="#B3000000">
+       <toolkit:Popup.Resources>
+              <Style x:Key="PopupSecondaryActionButtonStyle"
+                     TargetType="Button"
+                     BasedOn="{StaticResource SecondaryButtonStyle}">
+                     <Setter Property="Margin" Value="0"/>
+                     <Setter Property="Padding" Value="16,8"/>
+                     <Setter Property="HeightRequest" Value="44"/>
+                     <Setter Property="MinimumHeightRequest" Value="44"/>
+                     <Setter Property="VerticalOptions" Value="Center"/>
+              </Style>
+              <Style x:Key="PopupPrimaryActionButtonStyle"
+                     TargetType="Button"
+                     BasedOn="{StaticResource PrimaryButtonStyle}">
+                     <Setter Property="Margin" Value="0"/>
+                     <Setter Property="Padding" Value="16,8"/>
+                     <Setter Property="HeightRequest" Value="44"/>
+                     <Setter Property="MinimumHeightRequest" Value="44"/>
+                     <Setter Property="VerticalOptions" Value="Center"/>
+              </Style>
+       </toolkit:Popup.Resources>
+       <Border BackgroundColor="{StaticResource BackgroundDark}"
+               Stroke="{StaticResource BorderDark}"
+               StrokeThickness="1"
+               Padding="20"
+               WidthRequest="520"
+               MaximumWidthRequest="620"
+               VerticalOptions="Center"
+               HorizontalOptions="Center">
+              <Border.StrokeShape>
+                     <RoundRectangle CornerRadius="8"/>
+              </Border.StrokeShape>
+              <Grid RowDefinitions="Auto,Auto,Auto,Auto"
+                    RowSpacing="16"
+                    MinimumHeightRequest="420">
+                     <Label Text="ATR Settings"
+                            FontSize="20"
+                            FontAttributes="Bold"
+                            TextColor="{StaticResource OnSurfaceDark}"/>
+
+                     <Border Grid.Row="1"
+                             Stroke="{StaticResource BorderDark}"
+                             StrokeThickness="1"
+                             Padding="16"
+                             BackgroundColor="{StaticResource SurfaceDark}">
+                            <Border.StrokeShape>
+                                   <RoundRectangle CornerRadius="6"/>
+                            </Border.StrokeShape>
+
+                            <VerticalStackLayout Spacing="12">
+                                   <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                                          <Label Text="ATR Period" TextColor="{StaticResource OnSurfaceDark}" VerticalOptions="Center"/>
+                                          <Entry x:Name="AtrPeriodEntry" Grid.Column="1" Keyboard="Numeric" Style="{StaticResource FilterEntryStyle}"/>
+                                   </Grid>
+
+                                   <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                                          <Label Text="Impulse ATR Mult" TextColor="{StaticResource OnSurfaceDark}" VerticalOptions="Center"/>
+                                          <Entry x:Name="ImpulseAtrMultiplierEntry" Grid.Column="1" Keyboard="Numeric" Style="{StaticResource FilterEntryStyle}"/>
+                                   </Grid>
+
+                                   <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                                          <Label Text="Initial Stop ATR Mult" TextColor="{StaticResource OnSurfaceDark}" VerticalOptions="Center"/>
+                                          <Entry x:Name="InitialStopAtrMultiplierEntry" Grid.Column="1" Keyboard="Numeric" Style="{StaticResource FilterEntryStyle}"/>
+                                   </Grid>
+
+                                   <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                                          <Label Text="Profit Lock Arm ATR Mult" TextColor="{StaticResource OnSurfaceDark}" VerticalOptions="Center"/>
+                                          <Entry x:Name="ProfitLockArmAtrMultiplierEntry" Grid.Column="1" Keyboard="Numeric" Style="{StaticResource FilterEntryStyle}"/>
+                                   </Grid>
+
+                                   <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                                          <Label Text="Profit Lock Stop ATR Mult" TextColor="{StaticResource OnSurfaceDark}" VerticalOptions="Center"/>
+                                          <Entry x:Name="ProfitLockStopAtrMultiplierEntry" Grid.Column="1" Keyboard="Numeric" Style="{StaticResource FilterEntryStyle}"/>
+                                   </Grid>
+
+                                   <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                                          <Label Text="Live Entry ATR Mult" TextColor="{StaticResource OnSurfaceDark}" VerticalOptions="Center"/>
+                                          <Entry x:Name="LiveEntryAtrMultiplierEntry" Grid.Column="1" Keyboard="Numeric" Style="{StaticResource FilterEntryStyle}"/>
+                                   </Grid>
+
+                                   <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                                          <Label Text="Trailing Arm ATR Mult" TextColor="{StaticResource OnSurfaceDark}" VerticalOptions="Center"/>
+                                          <Entry x:Name="TrailingArmAtrMultiplierEntry" Grid.Column="1" Keyboard="Numeric" Style="{StaticResource FilterEntryStyle}"/>
+                                   </Grid>
+
+                                   <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                                          <Label Text="Trailing ATR Mult" TextColor="{StaticResource OnSurfaceDark}" VerticalOptions="Center"/>
+                                          <Entry x:Name="TrailingAtrMultiplierEntry" Grid.Column="1" Keyboard="Numeric" Style="{StaticResource FilterEntryStyle}"/>
+                                   </Grid>
+                            </VerticalStackLayout>
+                     </Border>
+
+                     <Grid Grid.Row="2"
+                           ColumnDefinitions="Auto,*,Auto,Auto"
+                           ColumnSpacing="12"
+                           Margin="0,8,0,0">
+                            <Button Grid.Column="0" Text="Defaults" Style="{StaticResource PopupSecondaryActionButtonStyle}" Clicked="OnDefaultsClicked" MinimumWidthRequest="80" HorizontalOptions="Start"/>
+                            <Button Grid.Column="2" Text="Cancel" Style="{StaticResource PopupSecondaryActionButtonStyle}" Clicked="OnCancelClicked" MinimumWidthRequest="80" HorizontalOptions="End"/>
+                            <Button Grid.Column="3" Text="Ok" Style="{StaticResource PopupPrimaryActionButtonStyle}" Clicked="OnOkClicked" MinimumWidthRequest="80" HorizontalOptions="End"/>
+                     </Grid>
+
+                     <Label Grid.Row="3"
+                            x:Name="ErrorLabel"
+                            TextColor="{StaticResource ErrorColor}"
+                            FontSize="12"
+                            IsVisible="False"/>
+              </Grid>
+       </Border>
+</toolkit:Popup>

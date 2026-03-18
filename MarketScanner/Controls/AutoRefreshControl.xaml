@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentView
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:converters="clr-namespace:MarketScanner.Converters"
+    xmlns:sys="clr-namespace:System;assembly=System.Runtime"
+    x:Class="MarketScanner.Controls.AutoRefreshControl"
+    x:Name="Root">
+    
+    <ContentView.Resources>
+        <ResourceDictionary>
+            <converters:EqualityConverter x:Key="EqInt" />
+        </ResourceDictionary>
+    </ContentView.Resources>
+
+    <!-- Single horizontal row: checkbox, label, and radio buttons inline -->
+    <HorizontalStackLayout Spacing="0" VerticalOptions="Center" Padding="0">
+        <!-- Checkbox -->
+        <CheckBox IsChecked="{Binding AutoRefreshEnabled, Mode=TwoWay}" 
+                  VerticalOptions="Center"
+                  Margin="0,0,-75,0" />
+
+        <!-- Label -->
+        <Label Text="Auto-refresh every"
+               TextColor="{DynamicResource TextPrimary}"
+               VerticalTextAlignment="Center"
+               VerticalOptions="Center"
+               HorizontalOptions="Start"
+               Margin="-4,0,0,0"
+               FontSize="11" />
+
+        <!-- Segmented radio container -->
+        <Border Style="{DynamicResource SegmentHost}">
+            <FlexLayout Direction="Row" Wrap="NoWrap" AlignItems="Center" AlignContent="Start" JustifyContent="Start">
+                <RadioButton Style="{DynamicResource ChipRadio}" GroupName="AutoRefreshInterval"
+                             Content="30s"
+                             IsChecked="{Binding RefreshIntervalSeconds, Mode=TwoWay,
+                                         Converter={StaticResource EqInt}, ConverterParameter=30}"/>
+                <RadioButton Style="{DynamicResource ChipRadio}" GroupName="AutoRefreshInterval"
+                             Content="60s"
+                             IsChecked="{Binding RefreshIntervalSeconds, Mode=TwoWay,
+                                         Converter={StaticResource EqInt}, ConverterParameter=60}"/>
+            </FlexLayout>
+        </Border>
+    </HorizontalStackLayout>
+</ContentView>

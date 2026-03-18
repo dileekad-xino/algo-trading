@@ -1,0 +1,954 @@
+using System.Collections.Concurrent;
+using System.Collections.ObjectModel;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using MarketScanner.Models;
+using MarketScanner.Services;
+using MarketScanner.Services.Ibkr;
+using Microsoft.Extensions.Logging;
+using System.Reactive.Linq;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace MarketScanner.ViewModels;
+
+public partial class QuoteViewModel : ObservableObject, IDisposable
+{
+    private readonly IbkrGatewayService _ibkrService;
+    private readonly IDispatcherService _dispatcher;
+    private readonly IWatchlistService _watchlistService;
+    private readonly ILogger<QuoteViewModel> _logger;
+    private ISymbolSearchService? _symbolSearchService;
+
+    [ObservableProperty] private ObservableCollection<ScannerRowViewModel> _quoteItems = new();
+    [ObservableProperty] private string _newSymbolText = "";
+    [ObservableProperty] private string _errorMessage = string.Empty;
+    [ObservableProperty] private bool _isLoading;
+    [ObservableProperty] private ObservableCollection<Watchlist> _watchlists = new();
+    [ObservableProperty] private Watchlist? _selectedWatchlist;
+    [ObservableProperty] private ObservableCollection<SymbolSearchResult> _searchResults = new();
+    [ObservableProperty] private bool _showSearchResults = false;
+    [ObservableProperty] private bool _isSearching = false;
+    [ObservableProperty] private int _selectedSearchResultIndex = -1;
+    [ObservableProperty] private ScannerRowViewModel? _selectedQuoteItem;
+    private Watchlist? _previousWatchlist; // Track previous selection to detect Scanner -> Watchlist transitions
+    private bool _isSyncing = false; // Flag to prevent restore when syncing from scanner refresh
+
+    // Computed property to enable/disable watchlist picker
+    public bool HasWatchlists => Watchlists.Count > 0;
+
+    private readonly Dictionary<string, ScannerRowViewModel> _rowCache = new();
+    private readonly ConcurrentQueue<TickData> _batchedTicks = new();
+    private IDispatcherTimer? _batchTimer;
+
+    private IDisposable? _tickSubscription;
+    private bool _disposed = false;
+
+    // Snapshot for restoring quotes when switching back from watchlist
+    private List<ScannerRowViewModel>? _savedQuoteItems;
+    private Dictionary<string, ScannerRowViewModel>? _savedRowCache;
+
+    private const int BatchIntervalMs = 16; // ~60 FPS for smooth updates
+    private const int MaxBatchSize = 50;
+    private readonly TimeSpan _searchDebounceDelay = TimeSpan.FromMilliseconds(300);
+
+    private readonly IServiceProvider? _serviceProvider;
+    private CancellationTokenSource? _searchCts;
+
+    public QuoteViewModel(
+        IbkrGatewayService ibkrService,
+        IDispatcherService dispatcher,
+        IWatchlistService watchlistService,
+        ILogger<QuoteViewModel> logger,
+        IServiceProvider? serviceProvider = null,
+        ISymbolSearchService? symbolSearchService = null)
+    {
+        _ibkrService = ibkrService;
+        _dispatcher = dispatcher;
+        _watchlistService = watchlistService;
+        _logger = logger;
+        _serviceProvider = serviceProvider;
+        _symbolSearchService = symbolSearchService;
+        _watchlistService.WatchlistsChanged += OnWatchlistsChanged;
+
+        // Setup batch timer for smooth updates (60 FPS)
+        _batchTimer = Application.Current.Dispatcher.CreateTimer();
+        _batchTimer.Interval = TimeSpan.FromMilliseconds(BatchIntervalMs);
+        _batchTimer.IsRepeating = true;
+        _batchTimer.Tick += OnBatchTimerTick;
+        _batchTimer.Start();
+
+        // Subscribe to tick updates (IBKR)
+        _tickSubscription = _ibkrService.TickStream.Subscribe(tick =>
+        {
+            _batchedTicks.Enqueue(tick);
+        });
+
+    }
+
+    private void OnBatchTimerTick(object? sender, EventArgs e)
+    {
+        FlushBatchedTicks();
+    }
+
+    public async Task InitializeAsync()
+    {
+        _logger.LogInformation("Quote panel initialized");
+        await LoadWatchlistsAsync();
+    }
+
+    /// <summary>
+    /// Resumes subscriptions to all symbols in QuoteItems when switching back to Quote view.
+    /// This ensures live updates continue after scanner cancels subscriptions.
+    /// </summary>
+    public async Task ResumeSubscriptionsAsync()
+    {
+        if (QuoteItems.Count == 0)
+        {
+            _logger.LogDebug("QuoteViewModel: No symbols to resume subscriptions for");
+            return;
+        }
+
+        var symbols = QuoteItems.Select(item => item.Symbol).ToList();
+        _logger.LogInformation("QuoteViewModel: Resuming subscriptions for {Count} symbols: {Symbols}",
+            symbols.Count, string.Join(", ", symbols));
+
+        try
+        {
+            _ibkrService.SubscribeToSymbols(symbols);
+            _logger.LogInformation("QuoteViewModel: Successfully resumed subscriptions for {Count} symbols", symbols.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "QuoteViewModel: Failed to resume subscriptions for symbols");
+        }
+
+        await Task.CompletedTask;
+    }
+
+    private async Task LoadWatchlistsAsync()
+    {
+        try
+        {
+            await _watchlistService.InitializeAsync();
+            var watchlists = await _watchlistService.GetAllWatchlistsAsync();
+            var previouslySelectedWatchlistId = SelectedWatchlist?.Id;
+
+            Watchlists.Clear();
+
+            // Add "Scanner" placeholder as first option to restore saved quotes
+            var scannerWatchlist = new Watchlist
+            {
+                Id = -1,
+                Name = "Scanner",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+            Watchlists.Add(scannerWatchlist);
+
+            foreach (var w in watchlists)
+            {
+                Watchlists.Add(w);
+            }
+
+            if (previouslySelectedWatchlistId.HasValue)
+            {
+                SelectedWatchlist = Watchlists.FirstOrDefault(w => w.Id == previouslySelectedWatchlistId.Value);
+            }
+
+            // Notify that HasWatchlists changed
+            OnPropertyChanged(nameof(HasWatchlists));
+
+            _logger.LogInformation("Loaded {Count} watchlists for quote view (including Scanner option)", Watchlists.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load watchlists");
+            ErrorMessage = $"Failed to load watchlists: {ex.Message}";
+        }
+    }
+
+    private async void OnWatchlistsChanged(object? sender, EventArgs e)
+    {
+        await _dispatcher.OnUIAsync(async () => await LoadWatchlistsAsync());
+    }
+
+    partial void OnSelectedWatchlistChanged(Watchlist? value)
+    {
+        if (value == null)
+        {
+            _previousWatchlist = null;
+            return;
+        }
+
+        // Handle "Scanner" option (Id = -1) - restore saved snapshot
+        if (value.Id == -1)
+        {
+            _previousWatchlist = value;
+            // Skip restore if we're syncing from scanner refresh (to prevent duplicates)
+            if (!_isSyncing)
+            {
+                RestoreSavedQuotes();
+            }
+            return;
+        }
+
+        // Always save snapshot when switching FROM "Scanner" (Id=-1 or null) TO a watchlist
+        // This preserves the current scanner quotes (including newly added ones) when switching back
+        var wasOnScanner = _previousWatchlist == null || _previousWatchlist.Id == -1;
+        var shouldSaveSnapshot = wasOnScanner && QuoteItems.Count > 0;
+
+        // Load watchlist (will save snapshot if coming from Scanner)
+        _ = LoadQuotesFromWatchlistAsync(value.Id, shouldSaveSnapshot);
+
+        _previousWatchlist = value;
+    }
+
+    private void RestoreSavedQuotes()
+    {
+        try
+        {
+            if (_savedQuoteItems == null || _savedRowCache == null)
+            {
+                return;
+            }
+
+            // Get symbols to re-subscribe
+            var symbolsToSubscribe = _savedQuoteItems.Select(q => q.Symbol).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+
+            // Clear current quotes
+            QuoteItems.Clear();
+            _rowCache.Clear();
+
+            // Restore saved quotes
+            foreach (var item in _savedQuoteItems)
+            {
+                QuoteItems.Add(item);
+                _rowCache[item.Symbol] = item;
+            }
+
+            // Restore row cache (in case there are additional entries)
+            foreach (var kvp in _savedRowCache)
+            {
+                if (!_rowCache.ContainsKey(kvp.Key))
+                {
+                    _rowCache[kvp.Key] = kvp.Value;
+                }
+            }
+
+            // Re-subscribe to market data for restored symbols
+            if (symbolsToSubscribe.Count > 0)
+            {
+                try
+                {
+                    _ibkrService.SubscribeToSymbols(symbolsToSubscribe);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Could not re-subscribe to IBKR market data for restored quotes");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to restore saved quotes");
+            ErrorMessage = $"Failed to restore quotes: {ex.Message}";
+        }
+    }
+
+    private async Task LoadQuotesFromWatchlistAsync(int watchlistId, bool saveSnapshot = false)
+    {
+        try
+        {
+            IsLoading = true;
+            ErrorMessage = string.Empty;
+
+            // Only save snapshot when switching FROM "Scanner" TO a watchlist
+            // This preserves the original scanner quotes when switching back
+            if (saveSnapshot && QuoteItems.Count > 0)
+            {
+                _savedQuoteItems = new List<ScannerRowViewModel>(QuoteItems);
+                _savedRowCache = new Dictionary<string, ScannerRowViewModel>(_rowCache);
+                _logger.LogDebug("Saved {Count} quotes to snapshot before loading watchlist (switching from Scanner)", _savedQuoteItems.Count);
+            }
+            else if (_savedQuoteItems == null && QuoteItems.Count == 0)
+            {
+                // No current quotes and no saved snapshot - initialize empty snapshot
+                _savedQuoteItems = new List<ScannerRowViewModel>();
+                _savedRowCache = new Dictionary<string, ScannerRowViewModel>();
+            }
+
+            // Get watchlist items
+            var items = await _watchlistService.GetWatchlistItemsAsync(watchlistId);
+            _logger.LogInformation("Loading {Count} symbols from watchlist {WatchlistId} into quotes", items.Count, watchlistId);
+
+            // Get symbols to subscribe
+            var symbolsToSubscribe = new List<string>();
+
+            // Clear existing quotes and add watchlist symbols
+            QuoteItems.Clear();
+            _rowCache.Clear();
+
+            foreach (var item in items)
+            {
+                var symbol = item.Symbol?.Trim().ToUpperInvariant();
+                if (string.IsNullOrWhiteSpace(symbol)) continue;
+
+                // Create ViewModel for this symbol
+                var rowVm = new ScannerRowViewModel(_logger)
+                {
+                    Symbol = symbol,
+                    Company = item.Company ?? symbol,
+                    Region = "United States",
+                    Product = "Stocks",
+                    Exchange = "us stocks",
+                    IsDropped = false
+                };
+
+                _rowCache[symbol] = rowVm;
+                QuoteItems.Add(rowVm);
+                symbolsToSubscribe.Add(symbol);
+            }
+
+            // Subscribe to market data for all symbols
+            if (symbolsToSubscribe.Count > 0)
+            {
+                try
+                {
+                    _ibkrService.SubscribeToSymbols(symbolsToSubscribe);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Could not subscribe to IBKR market data");
+                }
+            }
+
+            _logger.LogInformation("Loaded {Count} symbols from watchlist into quotes", QuoteItems.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load quotes from watchlist");
+            ErrorMessage = $"Failed to load watchlist: {ex.Message}";
+        }
+        finally
+        {
+            IsLoading = false;
+        }
+    }
+
+    public async Task AddQuotesFromScannerAsync(IEnumerable<ScannerRowViewModel> rows)
+    {
+        try
+        {
+            if (rows == null) return;
+
+            // Ensure we're on the Scanner option, not a watchlist
+            if (SelectedWatchlist == null || SelectedWatchlist.Id != -1)
+            {
+                // Find and select the "Scanner" option
+                var scannerOption = Watchlists.FirstOrDefault(w => w.Id == -1);
+                if (scannerOption != null)
+                {
+                    SelectedWatchlist = scannerOption;
+                    // Wait a moment for the watchlist change to process
+                    await Task.Delay(50);
+                }
+            }
+
+            // Build list to add (skip duplicates)
+            foreach (var r in rows)
+            {
+                var symbol = r.Symbol?.Trim().ToUpperInvariant();
+                if (string.IsNullOrWhiteSpace(symbol)) continue;
+                if (_rowCache.ContainsKey(symbol)) continue;
+
+                var rowVm = new ScannerRowViewModel(_logger)
+                {
+                    Symbol = symbol,
+                    Company = r.Company,
+                    Region = r.Region,
+                    Product = r.Product,
+                    Exchange = r.Exchange,
+                    IsDropped = false
+                };
+
+                // Seed with current values so UI shows something immediately; live ticks will update
+                rowVm.LastPrice = r.LastPrice;
+                rowVm.Volume = r.Volume;
+                rowVm.AvgVolume = r.AvgVolume;
+                // Seed previous close if available to enable Change/Change% immediately
+                if (r.PrevClose > 0)
+                    rowVm.UpdateClosePrice(r.PrevClose);
+
+                _rowCache[symbol] = rowVm;
+                QuoteItems.Add(rowVm);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to add quotes from scanner");
+            ErrorMessage = $"Failed to add quotes: {ex.Message}";
+        }
+
+        await Task.CompletedTask;
+    }
+
+    public async Task SyncToSymbols(IEnumerable<string> symbols)
+    {
+        // Always set syncing flag to prevent restore during sync operations
+        _isSyncing = true;
+        try
+        {
+            // Ensure we're on the Scanner option, not a watchlist
+            if (SelectedWatchlist == null || SelectedWatchlist.Id != -1)
+            {
+                // Find and select the "Scanner" option
+                var scannerOption = Watchlists.FirstOrDefault(w => w.Id == -1);
+                if (scannerOption != null)
+                {
+                    SelectedWatchlist = scannerOption;
+                    // Wait a moment for the watchlist change to process
+                    await Task.Delay(50);
+                }
+            }
+
+            // Preserve order by converting to list first
+            var orderedSymbols = symbols
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Select(s => s.Trim().ToUpperInvariant())
+                .ToList();
+
+            var target = new HashSet<string>(orderedSymbols, StringComparer.OrdinalIgnoreCase);
+
+            // Mark symbols not in target as dropped (instead of removing them)
+            var toMarkAsDropped = _rowCache.Keys.Where(k => !target.Contains(k)).ToList();
+            foreach (var k in toMarkAsDropped)
+            {
+                if (_rowCache.TryGetValue(k, out var vm))
+                {
+                    vm.IsDropped = true;
+                }
+            }
+
+            // Add new or update existing (preserve order)
+            foreach (var s in orderedSymbols)
+            {
+                if (_rowCache.TryGetValue(s, out var existingVm))
+                {
+                    // Mark as not dropped (in case it was previously dropped)
+                    existingVm.IsDropped = false;
+                }
+                else
+                {
+                    // Add new
+                    var vm = new ScannerRowViewModel(_logger)
+                    {
+                        Symbol = s,
+                        Company = s,
+                        Region = "United States",
+                        Product = "Stocks",
+                        Exchange = "us stocks",
+                        IsDropped = false
+                    };
+                    _rowCache[s] = vm;
+                }
+            }
+
+            // Build ordered list: active symbols first (in scanner order), then dropped symbols
+            var activeItems = new List<ScannerRowViewModel>();
+            foreach (var s in orderedSymbols)
+            {
+                if (_rowCache.TryGetValue(s, out var vm) && !vm.IsDropped)
+                {
+                    activeItems.Add(vm);
+                }
+            }
+
+            var droppedItems = _rowCache.Values
+                .Where(vm => vm.IsDropped)
+                .OrderBy(vm => vm.Symbol)
+                .ToList();
+
+            // Reconcile in-place to avoid CollectionView bounce/flicker.
+            await _dispatcher.OnUIAsync(() =>
+            {
+                ReconcileQuoteItems(activeItems, droppedItems);
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to sync quotes to symbols");
+            ErrorMessage = $"Failed to sync quotes: {ex.Message}";
+        }
+        finally
+        {
+            _isSyncing = false;
+        }
+        await Task.CompletedTask;
+    }
+
+    private void FlushBatchedTicks()
+    {
+        if (_batchedTicks.Count == 0 || _disposed)
+            return;
+
+        try
+        {
+            _dispatcher.OnUI(() =>
+            {
+                var processed = 0;
+                while (processed < MaxBatchSize && _batchedTicks.TryDequeue(out var tick))
+                {
+                    if (_rowCache.TryGetValue(tick.Symbol, out var row))
+                    {
+                        tick.ApplyTo(row);  // In-place update using the TickData extension method
+                    }
+                    processed++;
+                }
+            });
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("Unable to find main thread"))
+        {
+            // UI not ready yet or app shutting down - just skip this batch
+            // This can happen during app initialization or shutdown when the main thread is unavailable
+        }
+    }
+
+    [RelayCommand]
+    private async Task AddQuoteAsync()
+    {
+        try
+        {
+            // If a search result is highlighted, use that instead of raw text
+            if (ShowSearchResults && SelectedSearchResultIndex >= 0 && SelectedSearchResultIndex < SearchResults.Count)
+            {
+                var selectedResult = SearchResults[SelectedSearchResultIndex];
+                SelectSearchResult(selectedResult);
+                // Continue to add the symbol (SelectSearchResult sets NewSymbolText)
+            }
+
+            var symbol = NewSymbolText?.Trim().ToUpperInvariant() ?? "";
+
+            if (string.IsNullOrWhiteSpace(symbol))
+            {
+                return;
+            }
+
+            // Don't allow adding items during sync to prevent duplicates
+            if (_isSyncing)
+            {
+                ErrorMessage = "Please wait for sync to complete";
+                return;
+            }
+
+            // Check if already added
+            if (_rowCache.ContainsKey(symbol))
+            {
+                ErrorMessage = $"Symbol {symbol} is already in quotes";
+                return;
+            }
+
+            ErrorMessage = "";
+
+            // Create ViewModel for this symbol
+            var rowVm = new ScannerRowViewModel(_logger)
+            {
+                Symbol = symbol,
+                IsDropped = false
+            };
+
+            _rowCache[symbol] = rowVm;
+            QuoteItems.Add(rowVm);
+
+            // Subscribe to market data for this symbol (ensures live updates work)
+            try
+            {
+                _ibkrService.SubscribeToSymbols(new[] { symbol });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not subscribe to IBKR market data for {Symbol}", symbol);
+            }
+
+            NewSymbolText = "";
+            _logger.LogInformation("Added symbol {Symbol} to quotes (PrevClose={PrevClose}, LastPrice={LastPrice})", symbol, rowVm.PrevClose, rowVm.LastPrice);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to add quote");
+            ErrorMessage = $"Failed to add quote: {ex.Message}";
+        }
+
+        await Task.CompletedTask;
+    }
+
+    [RelayCommand]
+    private void RemoveQuote(ScannerRowViewModel? row)
+    {
+        try
+        {
+            row ??= SelectedQuoteItem;
+            if (row == null)
+            {
+                return;
+            }
+
+            var symbol = row.Symbol;
+            QuoteItems.Remove(row);
+            _rowCache.Remove(symbol);
+            if (ReferenceEquals(SelectedQuoteItem, row))
+            {
+                SelectedQuoteItem = null;
+            }
+            _logger.LogInformation("Removed symbol {Symbol} from quotes", symbol);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to remove quote");
+            ErrorMessage = $"Failed to remove quote: {ex.Message}";
+        }
+    }
+
+    [RelayCommand]
+    private void ClearQuotes()
+    {
+        try
+        {
+            QuoteItems.Clear();
+            _rowCache.Clear();
+            SelectedQuoteItem = null;
+            ErrorMessage = "";
+            _logger.LogInformation("Cleared all quotes");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to clear quotes");
+            ErrorMessage = $"Failed to clear quotes: {ex.Message}";
+        }
+    }
+
+    [RelayCommand]
+    private async Task RunAlgoAsync(ScannerRowViewModel? row)
+    {
+        try
+        {
+            row ??= SelectedQuoteItem;
+            if (row == null)
+            {
+                ErrorMessage = "Select a symbol first.";
+                return;
+            }
+
+            // Try to get service provider if not already set
+            var serviceProvider = _serviceProvider ??
+                Microsoft.Maui.Controls.Application.Current?.Handler?.MauiContext?.Services;
+
+            if (serviceProvider == null)
+            {
+                _logger.LogError("ServiceProvider is not available - cannot open algo runner");
+                ErrorMessage = "Algo runner is not available. Please restart the application.";
+                return;
+            }
+
+            // Get AlgoRunnerManagerService
+            var algoRunnerManager = serviceProvider.GetService<Services.AlgoRunnerManagerService>();
+            if (algoRunnerManager == null)
+            {
+                _logger.LogError("AlgoRunnerManagerService is not available - cannot add algo runner");
+                ErrorMessage = "Algo runner manager is not available. Please restart the application.";
+                return;
+            }
+
+            // Get candlestick builder and subscribe symbol (so candlesticks are built for this symbol)
+            var candlestickBuilder = serviceProvider.GetService<ICandlestickBuilder>();
+            try
+            {
+                if (candlestickBuilder != null)
+                {
+                    candlestickBuilder.SubscribeSymbol(row.Symbol);
+                    _logger.LogInformation("Subscribed {Symbol} to candlestick builder", row.Symbol);
+
+                    // Preload historical candlesticks so MACD can calculate immediately
+                    await candlestickBuilder.PreloadCandlesticksAsync(row.Symbol);
+                    _logger.LogInformation("Preloaded historical candlesticks for {Symbol}", row.Symbol);
+                }
+                else
+                {
+                    _logger.LogWarning("CandlestickBuilder not available - candlesticks may not be built for {Symbol}", row.Symbol);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to subscribe/preload {Symbol} to candlestick builder", row.Symbol);
+                // Continue anyway - algo can still run without candlesticks (will return Hold)
+            }
+
+            // Create algo runner view model
+            var algorithm = serviceProvider.GetRequiredService<MarketScanner.Services.IAlgoStrategy>();
+            var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
+            var tradeService = serviceProvider.GetService<ITradeService>();
+            var macdStrategy = serviceProvider.GetService<MarketScanner.Services.Impl.MacdStrategy>();
+            var macdEngine = serviceProvider.GetService<MarketScanner.Services.Impl.MacdEngine>();
+            var rsiEngine = serviceProvider.GetService<MarketScanner.Services.Impl.RsiEngine>();
+            var rsiSettingsService = serviceProvider.GetService<IRsiSettingsService>();
+            var candlestickStorage = serviceProvider.GetService<ICandlestickStorage>();
+            var config = serviceProvider.GetService<MarketScanner.Config.CandlestickConfig>();
+            var cciEngine = serviceProvider.GetService<Services.Impl.CciEngine>();
+            var cciSettingsService = serviceProvider.GetService<ICciSettingsService>();
+            var emaEngine = serviceProvider.GetService<Services.Impl.EmaEngine>();
+            var dispatcher = serviceProvider.GetService<IDispatcherService>();
+            var confirmationDialogService = serviceProvider.GetService<IConfirmationDialogService>();
+            var algoRunnerViewModel = new AlgoRunnerViewModel(
+                algorithm,
+                loggerFactory.CreateLogger<AlgoRunnerViewModel>(),
+                candlestickBuilder,
+                _ibkrService,
+                tradeService,
+                macdStrategy,
+                macdEngine,
+                rsiEngine,
+                rsiSettingsService,
+                candlestickStorage,
+                config,
+                cciEngine,
+                cciSettingsService,
+                emaEngine,
+                dispatcher,
+                confirmationDialogService);
+
+            // Initialize with selected symbol
+            await algoRunnerViewModel.InitializeAsync(row);
+
+            // Add to manager (will handle max 3 limit and replacement dialog)
+            var added = await algoRunnerManager.AddAlgoRunnerAsync(algoRunnerViewModel);
+            if (added)
+            {
+                _logger.LogInformation("Added algo runner tile for symbol {Symbol}", row.Symbol);
+            }
+            else
+            {
+                _logger.LogInformation("Failed to add algo runner for symbol {Symbol} (user cancelled or error)", row.Symbol);
+                // Dispose the ViewModel if it wasn't added
+                algoRunnerViewModel.Dispose();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to add algo runner");
+            ErrorMessage = $"Failed to add algo runner: {ex.Message}";
+        }
+    }
+
+    partial void OnNewSymbolTextChanged(string value)
+    {
+        // Clear error when user starts typing
+        ErrorMessage = "";
+
+        // Trigger search if 2+ characters
+        if (string.IsNullOrWhiteSpace(value) || value.Length < 2)
+        {
+            ShowSearchResults = false;
+            SearchResults.Clear();
+            return;
+        }
+
+        _ = PerformSearchAsync(value);
+    }
+
+    private async Task PerformSearchAsync(string query)
+    {
+        // Cancel previous search
+        _searchCts?.Cancel();
+        _searchCts?.Dispose();
+        _searchCts = new CancellationTokenSource();
+
+        try
+        {
+            // Debounce
+            await Task.Delay(_searchDebounceDelay, _searchCts.Token);
+
+            // Try to get symbol search service if not already set
+            var symbolSearchService = _symbolSearchService;
+            if (symbolSearchService == null)
+            {
+                var serviceProvider = _serviceProvider ??
+                    Microsoft.Maui.Controls.Application.Current?.Handler?.MauiContext?.Services;
+
+                if (serviceProvider != null)
+                {
+                    symbolSearchService = serviceProvider.GetService<ISymbolSearchService>();
+                    if (symbolSearchService != null)
+                    {
+                        _symbolSearchService = symbolSearchService; // Cache it for future use
+                    }
+                }
+
+                if (symbolSearchService == null)
+                {
+                    _logger.LogWarning("QuoteViewModel: Symbol search service is null - search cannot proceed");
+                    return;
+                }
+            }
+
+            if (_searchCts.Token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            IsSearching = true;
+            var results = await symbolSearchService.SearchSymbolsAsync(query, _searchCts.Token);
+
+            if (!_searchCts.Token.IsCancellationRequested)
+            {
+                await _dispatcher.OnUIAsync(() =>
+                {
+                    SearchResults.Clear();
+                    foreach (var result in results)
+                    {
+                        SearchResults.Add(result);
+                    }
+                    ShowSearchResults = results.Count > 0;
+                    SelectedSearchResultIndex = results.Count > 0 ? 0 : -1; // Auto-select first item
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when user types again
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "QuoteViewModel: Symbol search failed for query: '{Query}'", query);
+        }
+        finally
+        {
+            IsSearching = false;
+        }
+    }
+
+    partial void OnShowSearchResultsChanged(bool value)
+    {
+    }
+
+    [RelayCommand]
+    private void SelectSearchResult(SymbolSearchResult result)
+    {
+        NewSymbolText = result.Symbol;
+        ShowSearchResults = false;
+        SearchResults.Clear();
+        SelectedSearchResultIndex = -1;
+    }
+
+    [RelayCommand]
+    private void NavigateSearchResultsUp()
+    {
+        if (SearchResults.Count == 0) return;
+        SelectedSearchResultIndex = SelectedSearchResultIndex <= 0
+            ? SearchResults.Count - 1
+            : SelectedSearchResultIndex - 1;
+    }
+
+    [RelayCommand]
+    private void NavigateSearchResultsDown()
+    {
+        if (SearchResults.Count == 0) return;
+        SelectedSearchResultIndex = (SelectedSearchResultIndex + 1) % SearchResults.Count;
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+
+        try
+        {
+            _searchCts?.Cancel();
+            _searchCts?.Dispose();
+        }
+        catch { }
+
+        try
+        {
+            if (_batchTimer != null)
+            {
+                _batchTimer.Tick -= OnBatchTimerTick;
+                _batchTimer.Stop();
+                _batchTimer = null;
+            }
+        }
+        catch { }
+
+        try
+        {
+            _tickSubscription?.Dispose();
+        }
+        catch { }
+
+        try
+        {
+            _watchlistService.WatchlistsChanged -= OnWatchlistsChanged;
+        }
+        catch { }
+
+        QuoteItems.Clear();
+        _rowCache.Clear();
+    }
+
+    private void ReconcileQuoteItems(
+        IReadOnlyList<ScannerRowViewModel> activeItems,
+        IReadOnlyList<ScannerRowViewModel> droppedItems)
+    {
+        var target = new List<ScannerRowViewModel>(activeItems.Count + droppedItems.Count);
+        target.AddRange(activeItems);
+        target.AddRange(droppedItems);
+
+        var targetSymbols = new HashSet<string>(
+            target.Select(r => r.Symbol).Where(s => !string.IsNullOrWhiteSpace(s)),
+            StringComparer.OrdinalIgnoreCase);
+
+        for (var i = QuoteItems.Count - 1; i >= 0; i--)
+        {
+            var symbol = QuoteItems[i].Symbol;
+            if (string.IsNullOrWhiteSpace(symbol) || !targetSymbols.Contains(symbol))
+            {
+                if (ReferenceEquals(SelectedQuoteItem, QuoteItems[i]))
+                    SelectedQuoteItem = null;
+                QuoteItems.RemoveAt(i);
+            }
+        }
+
+        for (var targetIndex = 0; targetIndex < target.Count; targetIndex++)
+        {
+            var desired = target[targetIndex];
+            if (targetIndex < QuoteItems.Count &&
+                string.Equals(QuoteItems[targetIndex].Symbol, desired.Symbol, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var existingIndex = -1;
+            for (var i = targetIndex + 1; i < QuoteItems.Count; i++)
+            {
+                if (string.Equals(QuoteItems[i].Symbol, desired.Symbol, StringComparison.OrdinalIgnoreCase))
+                {
+                    existingIndex = i;
+                    break;
+                }
+            }
+
+            if (existingIndex >= 0)
+            {
+                QuoteItems.Move(existingIndex, targetIndex);
+            }
+            else
+            {
+                QuoteItems.Insert(targetIndex, desired);
+            }
+        }
+
+        while (QuoteItems.Count > target.Count)
+        {
+            if (ReferenceEquals(SelectedQuoteItem, QuoteItems[^1]))
+                SelectedQuoteItem = null;
+            QuoteItems.RemoveAt(QuoteItems.Count - 1);
+        }
+    }
+}

@@ -1,0 +1,7 @@
+namespace MarketScanner.Models;
+
+public sealed record AlgoRunnerSettingsResult(
+    RsiSettings RsiSettings,
+    CciSettings CciSettings,
+    AtrSettings AtrSettings
+);

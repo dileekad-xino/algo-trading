@@ -1,0 +1,544 @@
+using MarketScanner.ViewModels;
+using MarketScanner.Services;
+using MarketScanner.Utilities;
+using MarketScanner.Behaviors;
+using Microsoft.Maui.Controls;
+
+namespace MarketScanner.Views;
+
+public partial class ScannerPage : ContentPage
+{
+    private readonly ColumnLayoutService _layout;
+    private readonly double[] _preferredColumnWidths = new double[ColumnLayoutService.ColumnCount];
+    private double _lastFittedViewportWidth;
+
+    public ScannerPage(ColumnLayoutService layout)
+    {
+        _layout = layout;
+        _layout.Load();
+        InitializeComponent();
+
+        // Set up shared column definitions
+        SetupSharedColumns();
+
+        // Assign behavior properties
+        AssignBehaviorProperties();
+
+        // Set up CollectionView with shared columns
+        SetupCollectionView();
+
+        CapturePreferredColumnWidths();
+        _layout.ColumnsChanged += OnLayoutColumnsChanged;
+    }
+
+    public ScannerPage(ScannerViewModel viewModel, ColumnLayoutService layout) : this(layout)
+    {
+        BindingContext = viewModel;
+    }
+
+    private void SetupSharedColumns()
+    {
+        if (HeaderGrid == null) return;
+
+        // Clear existing column definitions
+        HeaderGrid.ColumnDefinitions.Clear();
+
+        // Add shared column definitions to header grid
+        foreach (var colDef in _layout.Columns)
+        {
+            HeaderGrid.ColumnDefinitions.Add(colDef);
+        }
+    }
+
+    private void AssignBehaviorProperties()
+    {
+        // Assign properties to resize behaviors
+        var grips = new[] {
+            GetGrip(0), GetGrip(1), GetGrip(2), GetGrip(3), GetGrip(4),
+            GetGrip(5), GetGrip(6), GetGrip(7), GetGrip(8), GetGrip(9)
+        };
+
+        for (int i = 0; i < grips.Length; i++)
+        {
+            var grip = grips[i];
+            if (grip != null)
+            {
+                var behavior = grip.Behaviors.OfType<ColumnResizeBehavior>().FirstOrDefault();
+                if (behavior != null)
+                {
+                    behavior.HostScrollView = TableScroll;
+                    behavior.Layout = _layout;
+                }
+            }
+        }
+
+        // Assign properties to auto-size behaviors
+        var headers = new[] {
+            GetHeader(0), GetHeader(1), GetHeader(2), GetHeader(3), GetHeader(4),
+            GetHeader(5), GetHeader(6), GetHeader(7), GetHeader(8), GetHeader(9)
+        };
+
+        for (int i = 0; i < headers.Length; i++)
+        {
+            var header = headers[i];
+            if (header != null)
+            {
+                var behavior = header.Behaviors.OfType<HeaderAutoSizeBehavior>().FirstOrDefault();
+                if (behavior != null)
+                {
+                    behavior.Layout = _layout;
+                    behavior.HeaderGrid = HeaderGrid;
+                    behavior.Rows = Rows;
+                }
+            }
+        }
+    }
+
+    private BoxView? GetGrip(int columnIndex)
+    {
+        if (HeaderGrid == null) return null;
+
+        foreach (var child in HeaderGrid.Children)
+        {
+            if (child is BoxView boxView && Grid.GetColumn(boxView) == columnIndex)
+            {
+                return boxView;
+            }
+        }
+        return null;
+    }
+
+    private Label? GetHeader(int columnIndex)
+    {
+        if (HeaderGrid == null) return null;
+
+        foreach (var child in HeaderGrid.Children)
+        {
+            if (child is Label label && Grid.GetColumn(label) == columnIndex)
+            {
+                return label;
+            }
+        }
+        return null;
+    }
+
+    private void SetupCollectionView()
+    {
+        if (Rows == null) return;
+
+        // Create a custom DataTemplate that uses shared columns
+        var dataTemplate = new DataTemplate(() =>
+        {
+            var rowGrid = new Grid
+            {
+                BackgroundColor = Color.FromArgb("#1a1a1a"),
+                HeightRequest = 32,
+                Padding = new Thickness(0),
+                ColumnSpacing = 0,
+                RowDefinitions = { new RowDefinition { Height = GridLength.Auto } }
+            };
+
+            // Row grid will be identified by its position in the CollectionView
+
+            // Add the SAME column definitions as header (shared references)
+            foreach (var colDef in _layout.Columns)
+            {
+                rowGrid.ColumnDefinitions.Add(colDef);
+            }
+
+            // Add labels for each column with inline styles
+            var symbolLabel = new Label
+            {
+                FontSize = 13,
+                Padding = new Thickness(6, 4),
+                TextColor = Color.FromArgb("#e0e0e0"),
+                VerticalOptions = LayoutOptions.Center,
+                HorizontalOptions = LayoutOptions.Start
+            };
+            var companyLabel = new Label
+            {
+                FontSize = 13,
+                Padding = new Thickness(6, 4),
+                TextColor = Color.FromArgb("#e0e0e0"),
+                VerticalOptions = LayoutOptions.Center,
+                HorizontalOptions = LayoutOptions.Start,
+                LineBreakMode = LineBreakMode.TailTruncation
+            };
+            var changePercentLabel = new Label
+            {
+                FontSize = 13,
+                Padding = new Thickness(6, 4),
+                TextColor = Color.FromArgb("#e0e0e0"),
+                VerticalOptions = LayoutOptions.Center,
+                FontFamily = "Cascadia Mono, Consolas, Menlo",
+                HorizontalTextAlignment = TextAlignment.End
+            };
+            var changeLabel = new Label
+            {
+                FontSize = 13,
+                Padding = new Thickness(6, 4),
+                TextColor = Color.FromArgb("#e0e0e0"),
+                VerticalOptions = LayoutOptions.Center,
+                FontFamily = "Cascadia Mono, Consolas, Menlo",
+                HorizontalTextAlignment = TextAlignment.End
+            };
+            var lastPriceLabel = new Label
+            {
+                FontSize = 13,
+                Padding = new Thickness(6, 4),
+                TextColor = Color.FromArgb("#e0e0e0"),
+                VerticalOptions = LayoutOptions.Center,
+                FontFamily = "Cascadia Mono, Consolas, Menlo",
+                HorizontalTextAlignment = TextAlignment.End
+            };
+            var relativeVolumeLabel = new Label
+            {
+                FontSize = 13,
+                Padding = new Thickness(6, 4),
+                TextColor = Color.FromArgb("#e0e0e0"),
+                VerticalOptions = LayoutOptions.Center,
+                FontFamily = "Cascadia Mono, Consolas, Menlo",
+                HorizontalTextAlignment = TextAlignment.End
+            };
+            var volumeLabel = new Label
+            {
+                FontSize = 13,
+                Padding = new Thickness(6, 4),
+                TextColor = Color.FromArgb("#e0e0e0"),
+                VerticalOptions = LayoutOptions.Center,
+                FontFamily = "Cascadia Mono, Consolas, Menlo",
+                HorizontalTextAlignment = TextAlignment.End
+            };
+            var averageVolumeLabel = new Label
+            {
+                FontSize = 13,
+                Padding = new Thickness(6, 4),
+                TextColor = Color.FromArgb("#e0e0e0"),
+                VerticalOptions = LayoutOptions.Center,
+                FontFamily = "Cascadia Mono, Consolas, Menlo",
+                HorizontalTextAlignment = TextAlignment.End
+            };
+            // Set Grid.Column properties
+            Grid.SetColumn(symbolLabel, 0);
+            Grid.SetColumn(companyLabel, 1);
+            Grid.SetColumn(changePercentLabel, 2);
+            Grid.SetColumn(changeLabel, 3);
+            Grid.SetColumn(lastPriceLabel, 4);
+            Grid.SetColumn(relativeVolumeLabel, 5);
+            Grid.SetColumn(volumeLabel, 6);
+            Grid.SetColumn(averageVolumeLabel, 7);
+
+            // Set bindings
+            symbolLabel.SetBinding(Label.TextProperty, "Symbol");
+            companyLabel.SetBinding(Label.TextProperty, "Company");
+            changePercentLabel.SetBinding(Label.TextProperty, new Binding("ChangePercent", stringFormat: "{0:+#0.00;-#0.00;0.00}%"));
+            changeLabel.SetBinding(Label.TextProperty, new Binding("Change", stringFormat: "{0:+#0.00;-#0.00;0.00}"));
+            lastPriceLabel.SetBinding(Label.TextProperty, new Binding("LastPrice", stringFormat: "{0:C2}"));
+            relativeVolumeLabel.SetBinding(Label.TextProperty, "DisplayRV");
+            volumeLabel.SetBinding(Label.TextProperty, new Binding("Volume", stringFormat: "{0:N0}"));
+            averageVolumeLabel.SetBinding(Label.TextProperty, "DisplayAvgVolume");
+
+            // Set up color changes for positive/negative values
+            changePercentLabel.SetBinding(Label.TextColorProperty, new Binding("ChangePercent", converter: new Converters.ChangeToColorConverter()));
+            changeLabel.SetBinding(Label.TextColorProperty, new Binding("Change", converter: new Converters.ChangeToColorConverter()));
+
+            rowGrid.Children.Add(symbolLabel);
+            rowGrid.Children.Add(companyLabel);
+            rowGrid.Children.Add(changePercentLabel);
+            rowGrid.Children.Add(changeLabel);
+            rowGrid.Children.Add(lastPriceLabel);
+            rowGrid.Children.Add(relativeVolumeLabel);
+            rowGrid.Children.Add(volumeLabel);
+            rowGrid.Children.Add(averageVolumeLabel);
+
+            // Add double-tap gesture for adding to watchlist
+            var doubleTapGesture = new TapGestureRecognizer
+            {
+                NumberOfTapsRequired = 2
+            };
+            // Bind command to the page's ViewModel
+            doubleTapGesture.SetBinding(TapGestureRecognizer.CommandProperty,
+                new Binding("AddAllVisibleToQuotesCommand", source: BindingContext));
+            // Bind parameter to the current row (the ScannerRowViewModel)
+            doubleTapGesture.SetBinding(TapGestureRecognizer.CommandParameterProperty, ".");
+            rowGrid.GestureRecognizers.Add(doubleTapGesture);
+
+            return rowGrid;
+        });
+
+        Rows.ItemTemplate = dataTemplate;
+    }
+
+    protected override async void OnAppearing()
+    {
+        base.OnAppearing();
+        if (BindingContext is ViewModels.ScannerViewModel vm)
+        {
+            //start the timer
+            vm.StartBatchTimer();
+
+            // Pass page title to ViewModel for dynamic watchlist naming
+            vm.SetPageTitle(this.Title);
+
+            // Set up Algo Runner tile bindings
+            SetupAlgoRunnerTiles(vm);
+
+            // Set up custom title view with Market Status and Daily P/L button
+            var titleView = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitionCollection
+                {
+                    new ColumnDefinition { Width = GridLength.Star },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                    new ColumnDefinition { Width = GridLength.Auto }
+                },
+                Padding = new Thickness(0, 0, 16, 0)
+            };
+
+            var titleLabel = new Label
+            {
+                Text = "Market Scanner",
+                FontSize = 18,
+                FontAttributes = FontAttributes.Bold,
+                TextColor = Colors.White,
+                VerticalOptions = LayoutOptions.Center,
+                HorizontalOptions = LayoutOptions.Start
+            };
+            Grid.SetColumn(titleLabel, 0);
+
+            var separatorLabel1 = new Label
+            {
+                Text = "|",
+                FontSize = 14,
+                TextColor = Colors.White,
+                VerticalOptions = LayoutOptions.Center,
+                HorizontalOptions = LayoutOptions.Center,
+                Margin = new Thickness(10, 0, 10, 0),
+                Opacity = 0.6
+            };
+            Grid.SetColumn(separatorLabel1, 1);
+
+            var statusLabel = new Label
+            {
+                FontSize = 14,
+                FontAttributes = FontAttributes.Bold,
+                TextColor = Colors.White,
+                VerticalOptions = LayoutOptions.Center,
+                HorizontalOptions = LayoutOptions.End
+            };
+            statusLabel.SetBinding(Label.TextProperty, new Binding("MarketStatus", source: vm));
+            Grid.SetColumn(statusLabel, 2);
+
+            var separatorLabel2 = new Label
+            {
+                Text = "|",
+                FontSize = 14,
+                TextColor = Colors.White,
+                VerticalOptions = LayoutOptions.Center,
+                HorizontalOptions = LayoutOptions.Center,
+                Margin = new Thickness(10, 0, 10, 0),
+                Opacity = 0.6
+            };
+            Grid.SetColumn(separatorLabel2, 3);
+
+            var dailyPlButton = new Button
+            {
+                Text = "Daily P/L",
+                FontSize = 12,
+                BackgroundColor = Color.FromArgb("#1E1E1E"),
+                TextColor = Colors.White,
+                BorderColor = Color.FromArgb("#404040"),
+                BorderWidth = 1,
+                Padding = new Thickness(12, 6),
+                HeightRequest = 32,
+                VerticalOptions = LayoutOptions.Center,
+                HorizontalOptions = LayoutOptions.End
+            };
+            dailyPlButton.SetBinding(Button.CommandProperty, new Binding("OpenDailyPlWindowCommand", source: vm));
+            Grid.SetColumn(dailyPlButton, 4);
+
+            titleView.Children.Add(titleLabel);
+            titleView.Children.Add(separatorLabel1);
+            titleView.Children.Add(statusLabel);
+            titleView.Children.Add(separatorLabel2);
+            titleView.Children.Add(dailyPlButton);
+
+            Shell.SetTitleView(this, titleView);
+
+            // Load refresh preferences on first appearance
+            vm.LoadRefreshPrefs();
+
+            if (vm.ScannerItems.Count == 0)
+            {
+                await vm.RefreshAsync();
+
+                // Initialize symbol search service after connection attempt
+                var serviceProvider = Microsoft.Maui.Controls.Application.Current?.Handler?.MauiContext?.Services;
+                var symbolSearchService = serviceProvider?.GetService<ISymbolSearchService>();
+                if (symbolSearchService != null)
+                {
+                    _ = symbolSearchService.InitializeAsync(); // Fire and forget
+                }
+            }
+        }
+    }
+
+    protected override void OnDisappearing()
+    {
+        base.OnDisappearing();
+        // Clear custom title view
+        Shell.SetTitleView(this, null);
+        // Don't dispose here - scanner should keep running in background
+        // Disposal will happen when app closes via App lifecycle
+    }
+
+    private void OnLayoutColumnsChanged(object? sender, EventArgs e)
+    {
+        CapturePreferredColumnWidths();
+        FitColumnsToViewport();
+    }
+
+    private void CapturePreferredColumnWidths()
+    {
+        for (int i = 0; i < ColumnLayoutService.ColumnCount; i++)
+        {
+            _preferredColumnWidths[i] = _layout.Get(i);
+        }
+    }
+
+    private void FitColumnsToViewport()
+    {
+        if (TableScroll == null || HeaderGrid == null) return;
+        if (HeaderGrid.ColumnDefinitions.Count < ColumnLayoutService.ColumnCount) return;
+
+        var viewportWidth = TableScroll.Width;
+        if (viewportWidth <= 0) return;
+
+        if (Math.Abs(viewportWidth - _lastFittedViewportWidth) < 2)
+            return;
+
+        _lastFittedViewportWidth = viewportWidth;
+
+        var count = ColumnLayoutService.ColumnCount;
+        var min = ColumnLayoutService.MinWidth;
+        var preferredTotal = _preferredColumnWidths.Sum();
+        var minTotal = min * count;
+        var targetTotal = Math.Max(viewportWidth, minTotal);
+        var applyPreferred = targetTotal >= preferredTotal;
+
+        var widths = new double[count];
+        if (applyPreferred)
+        {
+            Array.Copy(_preferredColumnWidths, widths, count);
+        }
+        else
+        {
+            var shrinkNeeded = preferredTotal - targetTotal;
+            var shrinkableTotal = _preferredColumnWidths.Sum(w => Math.Max(0, w - min));
+            var shrinkFactor = shrinkableTotal > 0 ? Math.Min(1.0, shrinkNeeded / shrinkableTotal) : 1.0;
+
+            for (int i = 0; i < count; i++)
+            {
+                var shrinkable = Math.Max(0, _preferredColumnWidths[i] - min);
+                widths[i] = _preferredColumnWidths[i] - (shrinkable * shrinkFactor);
+            }
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            var col = HeaderGrid.ColumnDefinitions[i];
+            var current = col.Width.Value;
+            if (Math.Abs(current - widths[i]) > 0.5)
+            {
+                col.Width = new GridLength(widths[i], GridUnitType.Absolute);
+            }
+        }
+    }
+
+    private bool _isSyncingScroll = false;
+
+    private void OnTableScrollScrolled(object? sender, ScrolledEventArgs e)
+    {
+        if (_isSyncingScroll) return;
+
+        _isSyncingScroll = true;
+
+        // Sync bottom scrollbar
+        if (BottomScrollBar != null)
+        {
+            BottomScrollBar.ScrollToAsync(e.ScrollX, 0, false);
+        }
+
+        _isSyncingScroll = false;
+    }
+
+    private void OnBottomScrollBarScrolled(object? sender, ScrolledEventArgs e)
+    {
+        if (_isSyncingScroll) return;
+
+        _isSyncingScroll = true;
+
+        // Sync table scroll
+        if (TableScroll != null)
+        {
+            TableScroll.ScrollToAsync(e.ScrollX, TableScroll.ScrollY, false);
+        }
+
+        _isSyncingScroll = false;
+    }
+
+    protected override void OnSizeAllocated(double width, double height)
+    {
+        base.OnSizeAllocated(width, height);
+
+        FitColumnsToViewport();
+
+        // Update bottom scrollbar track width to match table content width
+        if (TableScroll != null && ScrollBarTrack != null)
+        {
+            var tableContentWidth = TableScroll.ContentSize.Width;
+            if (tableContentWidth > 0)
+            {
+                ScrollBarTrack.WidthRequest = tableContentWidth;
+            }
+        }
+
+    }
+
+    private void OnFilterTextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (BindingContext is ViewModels.ScannerViewModel vm)
+            vm.GetType().GetMethod("DebouncedApply", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+              ?.Invoke(vm, null);
+    }
+
+    private void SetupAlgoRunnerTiles(ViewModels.ScannerViewModel vm)
+    {
+        if (AlgoTile0 == null || AlgoTile1 == null || AlgoTile2 == null)
+            return;
+
+        // Subscribe to collection changes to update bindings
+        vm.AlgoRunners.CollectionChanged += (sender, e) =>
+        {
+            // Update bindings when collection changes
+            AlgoTile0.BindingContext = vm.AlgoRunners.Count > 0 ? vm.AlgoRunners[0] : null;
+            AlgoTile1.BindingContext = vm.AlgoRunners.Count > 1 ? vm.AlgoRunners[1] : null;
+            AlgoTile2.BindingContext = vm.AlgoRunners.Count > 2 ? vm.AlgoRunners[2] : null;
+
+            AlgoTile0.IsVisible = vm.AlgoRunners.Count > 0;
+            AlgoTile1.IsVisible = vm.AlgoRunners.Count > 1;
+            AlgoTile2.IsVisible = vm.AlgoRunners.Count > 2;
+        };
+
+        // Set initial bindings
+        AlgoTile0.BindingContext = vm.AlgoRunners.Count > 0 ? vm.AlgoRunners[0] : null;
+        AlgoTile1.BindingContext = vm.AlgoRunners.Count > 1 ? vm.AlgoRunners[1] : null;
+        AlgoTile2.BindingContext = vm.AlgoRunners.Count > 2 ? vm.AlgoRunners[2] : null;
+
+        AlgoTile0.IsVisible = vm.AlgoRunners.Count > 0;
+        AlgoTile1.IsVisible = vm.AlgoRunners.Count > 1;
+        AlgoTile2.IsVisible = vm.AlgoRunners.Count > 2;
+    }
+}
