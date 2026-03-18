@@ -73,6 +73,8 @@ public sealed class AlgoStrategy : IAlgoStrategy
         }
     }
 
+    // combine results
+
     private AlgoResult CombineResults(
         IReadOnlyList<AlgoResult> results,
         ScannerRowViewModel symbol,
