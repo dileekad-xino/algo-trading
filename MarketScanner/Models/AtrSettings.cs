@@ -10,6 +10,7 @@ public class AtrSettings
     public const double DefaultInitialStopAtrMultiplier = 1.4;
     public const double DefaultProfitLockArmAtrMultiplier = 1.0;
     public const double DefaultProfitLockStopAtrMultiplier = 0.4;
+    public const double DefaultLiveEntryAtrMultiplier = 0.5;
     public const double DefaultTrailingArmAtrMultiplier = 1.5;
     public const double DefaultTrailingAtrMultiplier = 1.7;
 
@@ -18,6 +19,7 @@ public class AtrSettings
     public double InitialStopAtrMultiplier { get; set; } = DefaultInitialStopAtrMultiplier;
     public double ProfitLockArmAtrMultiplier { get; set; } = DefaultProfitLockArmAtrMultiplier;
     public double ProfitLockStopAtrMultiplier { get; set; } = DefaultProfitLockStopAtrMultiplier;
+    public double LiveEntryAtrMultiplier { get; set; } = DefaultLiveEntryAtrMultiplier;
     public double TrailingArmAtrMultiplier { get; set; } = DefaultTrailingArmAtrMultiplier;
     public double TrailingAtrMultiplier { get; set; } = DefaultTrailingAtrMultiplier;
 
@@ -31,6 +33,8 @@ public class AtrSettings
 
     public static double NormalizeProfitLockStopAtrMultiplier(double value) => value is >= 0 and <= 20 ? value : DefaultProfitLockStopAtrMultiplier;
 
+    public static double NormalizeLiveEntryAtrMultiplier(double value) => value is >= 0 and <= 20 ? value : DefaultLiveEntryAtrMultiplier;
+
     public static double NormalizeTrailingArmAtrMultiplier(double value) => value is > 0 and <= 20 ? value : DefaultTrailingArmAtrMultiplier;
 
     public static double NormalizeTrailingAtrMultiplier(double value) => value is > 0 and <= 20 ? value : DefaultTrailingAtrMultiplier;
@@ -42,6 +46,7 @@ public class AtrSettings
         InitialStopAtrMultiplier = DefaultInitialStopAtrMultiplier,
         ProfitLockArmAtrMultiplier = DefaultProfitLockArmAtrMultiplier,
         ProfitLockStopAtrMultiplier = DefaultProfitLockStopAtrMultiplier,
+        LiveEntryAtrMultiplier = DefaultLiveEntryAtrMultiplier,
         TrailingArmAtrMultiplier = DefaultTrailingArmAtrMultiplier,
         TrailingAtrMultiplier = DefaultTrailingAtrMultiplier
     };
@@ -53,6 +58,7 @@ public class AtrSettings
         InitialStopAtrMultiplier = InitialStopAtrMultiplier,
         ProfitLockArmAtrMultiplier = ProfitLockArmAtrMultiplier,
         ProfitLockStopAtrMultiplier = ProfitLockStopAtrMultiplier,
+        LiveEntryAtrMultiplier = LiveEntryAtrMultiplier,
         TrailingArmAtrMultiplier = TrailingArmAtrMultiplier,
         TrailingAtrMultiplier = TrailingAtrMultiplier
     };

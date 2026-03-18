@@ -758,6 +758,10 @@ public partial class AlgoRunnerViewModel : ObservableObject
                         ds ?? double.NaN
                     );
                 }
+
+                // Run strategy once immediately after close commit so setup-on-closed-bar state
+                // is evaluated before drifting further into live ticks.
+                ScheduleTickEvaluation();
             };
 
             _candlestickBuilder.OnFinalizedCandle += _finalizedCandleHandler;

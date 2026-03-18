@@ -36,6 +36,7 @@ public partial class AlgoRunnerSettingsPopup : Popup
     private Entry? _initialStopAtrMultiplierEntry;
     private Entry? _profitLockArmAtrMultiplierEntry;
     private Entry? _profitLockStopAtrMultiplierEntry;
+    private Entry? _liveEntryAtrMultiplierEntry;
     private Entry? _trailingArmAtrMultiplierEntry;
     private Entry? _trailingAtrMultiplierEntry;
 
@@ -230,6 +231,7 @@ public partial class AlgoRunnerSettingsPopup : Popup
         _initialStopAtrMultiplierEntry = CreateNumericEntry(AtrSettings.NormalizeInitialStopAtrMultiplier(_atrWorking.InitialStopAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture));
         _profitLockArmAtrMultiplierEntry = CreateNumericEntry(AtrSettings.NormalizeProfitLockArmAtrMultiplier(_atrWorking.ProfitLockArmAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture));
         _profitLockStopAtrMultiplierEntry = CreateNumericEntry(AtrSettings.NormalizeProfitLockStopAtrMultiplier(_atrWorking.ProfitLockStopAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture));
+        _liveEntryAtrMultiplierEntry = CreateNumericEntry(AtrSettings.NormalizeLiveEntryAtrMultiplier(_atrWorking.LiveEntryAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture));
         _trailingArmAtrMultiplierEntry = CreateNumericEntry(AtrSettings.NormalizeTrailingArmAtrMultiplier(_atrWorking.TrailingArmAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture));
         _trailingAtrMultiplierEntry = CreateNumericEntry(AtrSettings.NormalizeTrailingAtrMultiplier(_atrWorking.TrailingAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture));
 
@@ -245,11 +247,12 @@ public partial class AlgoRunnerSettingsPopup : Popup
                     CreateTwoColumnRow("Initial Stop ATR Mult", _initialStopAtrMultiplierEntry),
                     CreateTwoColumnRow("Profit Lock Arm ATR Mult", _profitLockArmAtrMultiplierEntry),
                     CreateTwoColumnRow("Profit Lock Stop ATR Mult", _profitLockStopAtrMultiplierEntry),
+                    CreateTwoColumnRow("Live Entry ATR Mult", _liveEntryAtrMultiplierEntry),
                     CreateTwoColumnRow("Trailing Arm ATR Mult", _trailingArmAtrMultiplierEntry),
                     CreateTwoColumnRow("Trailing ATR Mult", _trailingAtrMultiplierEntry),
                     new Label
                     {
-                        Text = "3-stage stops use Entry ATR frozen at BUY: initial, profit lock, then full trailing (armed by highest price progress).",
+                        Text = "Closed-bar setup + next-bar live ATR trigger for entry. 3-stage stops still use Entry ATR frozen at BUY.",
                         TextColor = Color.FromArgb("#B0B0B0"),
                         FontSize = 12
                     }
@@ -337,7 +340,7 @@ public partial class AlgoRunnerSettingsPopup : Popup
     private string? ValidateAndApplyAtrTab()
     {
         if (_atrPeriodEntry == null || _impulseAtrMultiplierEntry == null || _initialStopAtrMultiplierEntry == null ||
-            _profitLockArmAtrMultiplierEntry == null || _profitLockStopAtrMultiplierEntry == null || _trailingArmAtrMultiplierEntry == null || _trailingAtrMultiplierEntry == null)
+            _profitLockArmAtrMultiplierEntry == null || _profitLockStopAtrMultiplierEntry == null || _liveEntryAtrMultiplierEntry == null || _trailingArmAtrMultiplierEntry == null || _trailingAtrMultiplierEntry == null)
             return "ATR tab is not initialized.";
 
         if (!int.TryParse(_atrPeriodEntry.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var atrPeriod) || atrPeriod < 2 || atrPeriod > 200)
@@ -355,6 +358,9 @@ public partial class AlgoRunnerSettingsPopup : Popup
         if (!double.TryParse(_profitLockStopAtrMultiplierEntry.Text, NumberStyles.Number, CultureInfo.InvariantCulture, out var profitLockStopAtrMultiplier) || profitLockStopAtrMultiplier < 0 || profitLockStopAtrMultiplier > 20)
             return "Profit-lock stop ATR multiplier must be between 0 and 20.";
 
+        if (!double.TryParse(_liveEntryAtrMultiplierEntry.Text, NumberStyles.Number, CultureInfo.InvariantCulture, out var liveEntryAtrMultiplier) || liveEntryAtrMultiplier < 0 || liveEntryAtrMultiplier > 20)
+            return "Live entry ATR multiplier must be between 0 and 20.";
+
         if (!double.TryParse(_trailingArmAtrMultiplierEntry.Text, NumberStyles.Number, CultureInfo.InvariantCulture, out var trailingArmAtrMultiplier) || trailingArmAtrMultiplier <= 0 || trailingArmAtrMultiplier > 20)
             return "Trailing arm ATR multiplier must be between 0 and 20.";
 
@@ -366,6 +372,7 @@ public partial class AlgoRunnerSettingsPopup : Popup
         _atrWorking.InitialStopAtrMultiplier = initialStopAtrMultiplier;
         _atrWorking.ProfitLockArmAtrMultiplier = profitLockArmAtrMultiplier;
         _atrWorking.ProfitLockStopAtrMultiplier = profitLockStopAtrMultiplier;
+        _atrWorking.LiveEntryAtrMultiplier = liveEntryAtrMultiplier;
         _atrWorking.TrailingArmAtrMultiplier = trailingArmAtrMultiplier;
         _atrWorking.TrailingAtrMultiplier = trailingAtrMultiplier;
         return null;

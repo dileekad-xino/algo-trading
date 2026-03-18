@@ -22,6 +22,7 @@ public partial class AtrSettingsPopup : Popup
         InitialStopAtrMultiplierEntry.Text = AtrSettings.NormalizeInitialStopAtrMultiplier(settings.InitialStopAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture);
         ProfitLockArmAtrMultiplierEntry.Text = AtrSettings.NormalizeProfitLockArmAtrMultiplier(settings.ProfitLockArmAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture);
         ProfitLockStopAtrMultiplierEntry.Text = AtrSettings.NormalizeProfitLockStopAtrMultiplier(settings.ProfitLockStopAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture);
+        LiveEntryAtrMultiplierEntry.Text = AtrSettings.NormalizeLiveEntryAtrMultiplier(settings.LiveEntryAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture);
         TrailingArmAtrMultiplierEntry.Text = AtrSettings.NormalizeTrailingArmAtrMultiplier(settings.TrailingArmAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture);
         TrailingAtrMultiplierEntry.Text = AtrSettings.NormalizeTrailingAtrMultiplier(settings.TrailingAtrMultiplier).ToString("0.##", CultureInfo.InvariantCulture);
         ErrorLabel.IsVisible = false;
@@ -85,6 +86,12 @@ public partial class AtrSettingsPopup : Popup
             return false;
         }
 
+        if (!double.TryParse(LiveEntryAtrMultiplierEntry.Text, NumberStyles.Number, CultureInfo.InvariantCulture, out var liveEntryAtrMultiplier) || liveEntryAtrMultiplier < 0 || liveEntryAtrMultiplier > 20)
+        {
+            error = "Live entry ATR multiplier must be between 0 and 20.";
+            return false;
+        }
+
         if (!double.TryParse(TrailingArmAtrMultiplierEntry.Text, NumberStyles.Number, CultureInfo.InvariantCulture, out var trailingArmAtrMultiplier) || trailingArmAtrMultiplier <= 0 || trailingArmAtrMultiplier > 20)
         {
             error = "Trailing arm ATR multiplier must be between 0 and 20.";
@@ -102,6 +109,7 @@ public partial class AtrSettingsPopup : Popup
         settings.InitialStopAtrMultiplier = initialStopAtrMultiplier;
         settings.ProfitLockArmAtrMultiplier = profitLockArmAtrMultiplier;
         settings.ProfitLockStopAtrMultiplier = profitLockStopAtrMultiplier;
+        settings.LiveEntryAtrMultiplier = liveEntryAtrMultiplier;
         settings.TrailingArmAtrMultiplier = trailingArmAtrMultiplier;
         settings.TrailingAtrMultiplier = trailingAtrMultiplier;
 

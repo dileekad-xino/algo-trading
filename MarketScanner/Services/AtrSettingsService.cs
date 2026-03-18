@@ -76,6 +76,7 @@ public sealed class AtrSettingsService : IAtrSettingsService
         _current.InitialStopAtrMultiplier = AtrSettings.NormalizeInitialStopAtrMultiplier(_current.InitialStopAtrMultiplier);
         _current.ProfitLockArmAtrMultiplier = AtrSettings.NormalizeProfitLockArmAtrMultiplier(_current.ProfitLockArmAtrMultiplier);
         _current.ProfitLockStopAtrMultiplier = AtrSettings.NormalizeProfitLockStopAtrMultiplier(_current.ProfitLockStopAtrMultiplier);
+        _current.LiveEntryAtrMultiplier = AtrSettings.NormalizeLiveEntryAtrMultiplier(_current.LiveEntryAtrMultiplier);
         _current.TrailingArmAtrMultiplier = AtrSettings.NormalizeTrailingArmAtrMultiplier(_current.TrailingArmAtrMultiplier);
         _current.TrailingAtrMultiplier = AtrSettings.NormalizeTrailingAtrMultiplier(_current.TrailingAtrMultiplier);
     }
@@ -118,6 +119,7 @@ public sealed class AtrSettingsService : IAtrSettingsService
             InitialStopAtrMultiplier = AtrSettings.DefaultInitialStopAtrMultiplier,
             ProfitLockArmAtrMultiplier = AtrSettings.DefaultProfitLockArmAtrMultiplier,
             ProfitLockStopAtrMultiplier = AtrSettings.DefaultProfitLockStopAtrMultiplier,
+            LiveEntryAtrMultiplier = AtrSettings.DefaultLiveEntryAtrMultiplier,
             TrailingArmAtrMultiplier = legacy.TrailingArmAtrMultiplier ?? AtrSettings.DefaultTrailingArmAtrMultiplier,
             TrailingAtrMultiplier = legacy.TrailingAtrMultiplier ?? AtrSettings.DefaultTrailingAtrMultiplier
         };

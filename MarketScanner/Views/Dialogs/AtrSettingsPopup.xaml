@@ -79,6 +79,11 @@
                                    </Grid>
 
                                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                                          <Label Text="Live Entry ATR Mult" TextColor="{StaticResource OnSurfaceDark}" VerticalOptions="Center"/>
+                                          <Entry x:Name="LiveEntryAtrMultiplierEntry" Grid.Column="1" Keyboard="Numeric" Style="{StaticResource FilterEntryStyle}"/>
+                                   </Grid>
+
+                                   <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
                                           <Label Text="Trailing Arm ATR Mult" TextColor="{StaticResource OnSurfaceDark}" VerticalOptions="Center"/>
                                           <Entry x:Name="TrailingArmAtrMultiplierEntry" Grid.Column="1" Keyboard="Numeric" Style="{StaticResource FilterEntryStyle}"/>
                                    </Grid>
