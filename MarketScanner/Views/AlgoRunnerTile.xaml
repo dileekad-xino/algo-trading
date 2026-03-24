@@ -158,6 +158,28 @@
                         </Border.StrokeShape>
                         
                         <VerticalStackLayout Spacing="8">
+                            <Border StrokeThickness="1"
+                                    Stroke="#FF9800"
+                                    BackgroundColor="{StaticResource BackgroundDark}"
+                                    Padding="8"
+                                    IsVisible="{Binding SelectedSymbol.HasNews}">
+                                <Border.StrokeShape>
+                                    <RoundRectangle CornerRadius="4"/>
+                                </Border.StrokeShape>
+                                <VerticalStackLayout Spacing="3">
+                                    <Label Text="Recent Headline"
+                                           TextColor="#FF9800"
+                                           FontSize="10"/>
+                                    <Label Text="{Binding SelectedSymbol.LatestHeadline}"
+                                           TextColor="{StaticResource OnSurfaceDark}"
+                                           FontSize="11"
+                                           LineBreakMode="WordWrap"/>
+                                    <Label Text="{Binding SelectedSymbol.DisplayLatestHeadlineAt}"
+                                           TextColor="{StaticResource OnSurfaceVariantDark}"
+                                           FontSize="10"/>
+                                </VerticalStackLayout>
+                            </Border>
+
                             <Grid ColumnDefinitions="Auto,*">
                                 <Label Grid.Column="0"
                                        Text="Action:"

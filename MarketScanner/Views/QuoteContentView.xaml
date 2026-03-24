@@ -194,12 +194,21 @@
                             </FlyoutBase.ContextFlyout>
 
                             <!-- Data cells -->
-                            <Label Grid.Column="0" Text="{Binding Symbol}" 
-                                   TextColor="{StaticResource OnSurfaceDark}" 
-                                   FontSize="13" 
-                                   VerticalOptions="Center"
-                                   HorizontalOptions="Start"
-                                   Padding="6,4"/>
+                            <HorizontalStackLayout Grid.Column="0"
+                                                   Spacing="4"
+                                                   VerticalOptions="Center"
+                                                   HorizontalOptions="Start"
+                                                   Padding="6,4">
+                                <Label Text="{Binding Symbol}"
+                                       TextColor="{StaticResource OnSurfaceDark}"
+                                       FontSize="13"
+                                       VerticalOptions="Center"/>
+                                <Label Text="🔥"
+                                       TextColor="#FF9800"
+                                       FontSize="12"
+                                       VerticalOptions="Center"
+                                       IsVisible="{Binding HasNews}"/>
+                            </HorizontalStackLayout>
 
                             <Label Grid.Column="1" 
                                    Text="{Binding LastPrice, StringFormat='{0:C2}'}" 

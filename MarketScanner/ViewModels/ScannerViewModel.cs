@@ -27,6 +27,7 @@ public partial class ScannerViewModel : ObservableObject
     private readonly ITradeService _tradeService;
     private readonly IRsiSettingsService _rsiSettingsService;
     private readonly IAlgoStrategy _algoStrategy;
+    private readonly INewsHeadlineService _newsHeadlineService;
     private readonly Services.AlgoRunnerManagerService? _algoRunnerManager;
     private readonly IConfirmationDialogService? _confirmationDialogService;
     private readonly IPositionClosureService? _positionClosureService;
@@ -205,6 +206,7 @@ public partial class ScannerViewModel : ObservableObject
         IWatchlistService watchlistService,
         ITradeService tradeService,
         IRsiSettingsService rsiSettingsService,
+        INewsHeadlineService newsHeadlineService,
         IAlgoStrategy algoStrategy,
         Services.AlgoRunnerManagerService? algoRunnerManager = null,
         IConfirmationDialogService? confirmationDialogService = null,
@@ -216,6 +218,7 @@ public partial class ScannerViewModel : ObservableObject
         _watchlistService = watchlistService;
         _tradeService = tradeService;
         _rsiSettingsService = rsiSettingsService;
+        _newsHeadlineService = newsHeadlineService;
         _algoStrategy = algoStrategy;
         _algoRunnerManager = algoRunnerManager;
         _confirmationDialogService = confirmationDialogService;
@@ -1174,6 +1177,7 @@ public partial class ScannerViewModel : ObservableObject
             (IbkrGatewayService)_scanner,
             _dispatcher,
             _watchlistService,
+            _newsHeadlineService,
             quoteLogger,
             serviceProvider,
             symbolSearchService);

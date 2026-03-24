@@ -33,6 +33,7 @@ public partial class AlgoRunnerViewModel : ObservableObject
     private readonly Services.Impl.EmaEngine? _emaEngine;
     private readonly IDispatcherService? _dispatcher;
     private readonly IConfirmationDialogService? _confirmationDialogService;
+    private readonly INewsHeadlineService? _newsHeadlineService;
     private CancellationTokenSource? _cancellationTokenSource;
     private IDisposable? _tickSubscription;
     private IDisposable? _streamingBarSubscription;
@@ -99,7 +100,8 @@ public partial class AlgoRunnerViewModel : ObservableObject
         ICciSettingsService? cciSettingsService = null,
         Services.Impl.EmaEngine? emaEngine = null,
         IDispatcherService? dispatcher = null,
-        IConfirmationDialogService? confirmationDialogService = null)
+        IConfirmationDialogService? confirmationDialogService = null,
+        INewsHeadlineService? newsHeadlineService = null)
     {
         _algorithm = algorithm;
         _logger = logger;
@@ -117,6 +119,7 @@ public partial class AlgoRunnerViewModel : ObservableObject
         _emaEngine = emaEngine;
         _dispatcher = dispatcher;
         _confirmationDialogService = confirmationDialogService;
+        _newsHeadlineService = newsHeadlineService;
     }
 
     public async Task InitializeAsync(ScannerRowViewModel symbol)
@@ -125,6 +128,20 @@ public partial class AlgoRunnerViewModel : ObservableObject
         ErrorMessage = string.Empty;
         Result = null;
         ResetPosition(); // Reset position on initialization
+
+        if (_newsHeadlineService != null)
+        {
+            _newsHeadlineService.HeadlineUpdated -= OnHeadlineUpdated;
+            _newsHeadlineService.HeadlineUpdated += OnHeadlineUpdated;
+
+            var latestHeadline = _newsHeadlineService.GetLatestHeadline(symbol.Symbol);
+            if (latestHeadline is not null)
+            {
+                symbol.HasNews = true;
+                symbol.LatestHeadline = latestHeadline.Headline;
+                symbol.LatestHeadlineAt = latestHeadline.PublishedAtUtc;
+            }
+        }
 
         // Subscribe to live tick updates for this symbol
         SubscribeToTickUpdates();
@@ -165,6 +182,27 @@ public partial class AlgoRunnerViewModel : ObservableObject
             {
                 UpdateProfitLossFromTick();
             }
+        });
+    }
+
+    private void OnHeadlineUpdated(object? sender, NewsHeadlineItem headline)
+    {
+        if (SelectedSymbol == null ||
+            !string.Equals(SelectedSymbol.Symbol, headline.Symbol, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _dispatcher?.OnUI(() =>
+        {
+            if (SelectedSymbol == null)
+            {
+                return;
+            }
+
+            SelectedSymbol.HasNews = true;
+            SelectedSymbol.LatestHeadline = headline.Headline;
+            SelectedSymbol.LatestHeadlineAt = headline.PublishedAtUtc;
         });
     }
 
@@ -1456,6 +1494,11 @@ public partial class AlgoRunnerViewModel : ObservableObject
         // Unsubscribe from tick stream
         _tickSubscription?.Dispose();
         _tickSubscription = null;
+
+        if (_newsHeadlineService != null)
+        {
+            _newsHeadlineService.HeadlineUpdated -= OnHeadlineUpdated;
+        }
 
         // Unsubscribe from candlestick builder on disposal to ensure cleanup
         UnsubscribeFromCandlestickBuilder();

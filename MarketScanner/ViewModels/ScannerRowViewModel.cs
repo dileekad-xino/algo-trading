@@ -23,6 +23,9 @@ public sealed class ScannerRowViewModel : ObservableObject, IDisposable
     private string? _rsiSignal;
     private double? _cciValue;
     private string? _cciSignal;
+    private bool _hasNews;
+    private string _latestHeadline = string.Empty;
+    private DateTime? _latestHeadlineAt;
 
     private string _symbol = string.Empty;
     private string _company = string.Empty;
@@ -123,6 +126,9 @@ public sealed class ScannerRowViewModel : ObservableObject, IDisposable
     public string DisplayRsiSignal => string.IsNullOrWhiteSpace(_rsiSignal) ? "–" : _rsiSignal;
     public string DisplayCci => _cciValue.HasValue ? $"{_cciValue.Value:0.0}" : "–";
     public string DisplayCciSignal => string.IsNullOrWhiteSpace(_cciSignal) ? "–" : _cciSignal;
+    public string DisplayLatestHeadlineAt => _latestHeadlineAt.HasValue
+        ? _latestHeadlineAt.Value.ToLocalTime().ToString("HH:mm")
+        : string.Empty;
 
     // Removed FloatShares and FiftyTwoWeekHigh properties as requested
 
@@ -194,6 +200,30 @@ public sealed class ScannerRowViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _cciSignal, value))
             {
                 OnPropertyChanged(nameof(DisplayCciSignal));
+            }
+        }
+    }
+
+    public bool HasNews
+    {
+        get => _hasNews;
+        set => SetProperty(ref _hasNews, value);
+    }
+
+    public string LatestHeadline
+    {
+        get => _latestHeadline;
+        set => SetProperty(ref _latestHeadline, value);
+    }
+
+    public DateTime? LatestHeadlineAt
+    {
+        get => _latestHeadlineAt;
+        set
+        {
+            if (SetProperty(ref _latestHeadlineAt, value))
+            {
+                OnPropertyChanged(nameof(DisplayLatestHeadlineAt));
             }
         }
     }

@@ -16,6 +16,7 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
     private readonly IbkrGatewayService _ibkrService;
     private readonly IDispatcherService _dispatcher;
     private readonly IWatchlistService _watchlistService;
+    private readonly INewsHeadlineService _newsHeadlineService;
     private readonly ILogger<QuoteViewModel> _logger;
     private ISymbolSearchService? _symbolSearchService;
 
@@ -58,6 +59,7 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
         IbkrGatewayService ibkrService,
         IDispatcherService dispatcher,
         IWatchlistService watchlistService,
+        INewsHeadlineService newsHeadlineService,
         ILogger<QuoteViewModel> logger,
         IServiceProvider? serviceProvider = null,
         ISymbolSearchService? symbolSearchService = null)
@@ -65,10 +67,12 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
         _ibkrService = ibkrService;
         _dispatcher = dispatcher;
         _watchlistService = watchlistService;
+        _newsHeadlineService = newsHeadlineService;
         _logger = logger;
         _serviceProvider = serviceProvider;
         _symbolSearchService = symbolSearchService;
         _watchlistService.WatchlistsChanged += OnWatchlistsChanged;
+        _newsHeadlineService.HeadlineUpdated += OnHeadlineUpdated;
 
         // Setup batch timer for smooth updates (60 FPS)
         _batchTimer = Application.Current.Dispatcher.CreateTimer();
@@ -82,7 +86,6 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
         {
             _batchedTicks.Enqueue(tick);
         });
-
     }
 
     private void OnBatchTimerTick(object? sender, EventArgs e)
@@ -94,6 +97,38 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
     {
         _logger.LogInformation("Quote panel initialized");
         await LoadWatchlistsAsync();
+        SyncNewsSubscriptions();
+    }
+
+    private void SyncNewsSubscriptions()
+    {
+        var symbols = _rowCache.Values
+            .Where(row => !row.IsDropped && !string.IsNullOrWhiteSpace(row.Symbol))
+            .Select(row => row.Symbol)
+            .ToList();
+
+        _newsHeadlineService.SyncSymbols(symbols);
+    }
+
+    private void ApplyCachedNewsState(ScannerRowViewModel row)
+    {
+        var latestHeadline = _newsHeadlineService.GetLatestHeadline(row.Symbol);
+        row.HasNews = latestHeadline is not null;
+        row.LatestHeadline = latestHeadline?.Headline ?? string.Empty;
+        row.LatestHeadlineAt = latestHeadline?.PublishedAtUtc;
+    }
+
+    private void OnHeadlineUpdated(object? sender, NewsHeadlineItem headline)
+    {
+        _ = _dispatcher.OnUIAsync(() =>
+        {
+            if (_rowCache.TryGetValue(headline.Symbol, out var row))
+            {
+                row.HasNews = true;
+                row.LatestHeadline = headline.Headline;
+                row.LatestHeadlineAt = headline.PublishedAtUtc;
+            }
+        });
     }
 
     /// <summary>
@@ -115,6 +150,7 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
         try
         {
             _ibkrService.SubscribeToSymbols(symbols);
+            SyncNewsSubscriptions();
             _logger.LogInformation("QuoteViewModel: Successfully resumed subscriptions for {Count} symbols", symbols.Count);
         }
         catch (Exception ex)
@@ -222,6 +258,7 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
             // Restore saved quotes
             foreach (var item in _savedQuoteItems)
             {
+                ApplyCachedNewsState(item);
                 QuoteItems.Add(item);
                 _rowCache[item.Symbol] = item;
             }
@@ -247,6 +284,8 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
                     _logger.LogDebug(ex, "Could not re-subscribe to IBKR market data for restored quotes");
                 }
             }
+
+            SyncNewsSubscriptions();
         }
         catch (Exception ex)
         {
@@ -304,6 +343,7 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
                     IsDropped = false
                 };
 
+                ApplyCachedNewsState(rowVm);
                 _rowCache[symbol] = rowVm;
                 QuoteItems.Add(rowVm);
                 symbolsToSubscribe.Add(symbol);
@@ -321,6 +361,8 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
                     _logger.LogDebug(ex, "Could not subscribe to IBKR market data");
                 }
             }
+
+            SyncNewsSubscriptions();
 
             _logger.LogInformation("Loaded {Count} symbols from watchlist into quotes", QuoteItems.Count);
         }
@@ -379,9 +421,12 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
                 if (r.PrevClose > 0)
                     rowVm.UpdateClosePrice(r.PrevClose);
 
+                ApplyCachedNewsState(rowVm);
                 _rowCache[symbol] = rowVm;
                 QuoteItems.Add(rowVm);
             }
+
+            SyncNewsSubscriptions();
         }
         catch (Exception ex)
         {
@@ -449,6 +494,7 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
                         Exchange = "us stocks",
                         IsDropped = false
                     };
+                    ApplyCachedNewsState(vm);
                     _rowCache[s] = vm;
                 }
             }
@@ -473,6 +519,8 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
             {
                 ReconcileQuoteItems(activeItems, droppedItems);
             });
+
+            SyncNewsSubscriptions();
         }
         catch (Exception ex)
         {
@@ -556,6 +604,7 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
                 IsDropped = false
             };
 
+            ApplyCachedNewsState(rowVm);
             _rowCache[symbol] = rowVm;
             QuoteItems.Add(rowVm);
 
@@ -568,6 +617,8 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
             {
                 _logger.LogDebug(ex, "Could not subscribe to IBKR market data for {Symbol}", symbol);
             }
+
+            SyncNewsSubscriptions();
 
             NewSymbolText = "";
             _logger.LogInformation("Added symbol {Symbol} to quotes (PrevClose={PrevClose}, LastPrice={LastPrice})", symbol, rowVm.PrevClose, rowVm.LastPrice);
@@ -599,6 +650,7 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
             {
                 SelectedQuoteItem = null;
             }
+            SyncNewsSubscriptions();
             _logger.LogInformation("Removed symbol {Symbol} from quotes", symbol);
         }
         catch (Exception ex)
@@ -617,6 +669,7 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
             _rowCache.Clear();
             SelectedQuoteItem = null;
             ErrorMessage = "";
+            SyncNewsSubscriptions();
             _logger.LogInformation("Cleared all quotes");
         }
         catch (Exception ex)
@@ -697,6 +750,7 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
             var emaEngine = serviceProvider.GetService<Services.Impl.EmaEngine>();
             var dispatcher = serviceProvider.GetService<IDispatcherService>();
             var confirmationDialogService = serviceProvider.GetService<IConfirmationDialogService>();
+            var newsHeadlineService = serviceProvider.GetService<INewsHeadlineService>();
             var algoRunnerViewModel = new AlgoRunnerViewModel(
                 algorithm,
                 loggerFactory.CreateLogger<AlgoRunnerViewModel>(),
@@ -713,7 +767,8 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
                 cciSettingsService,
                 emaEngine,
                 dispatcher,
-                confirmationDialogService);
+                confirmationDialogService,
+                newsHeadlineService);
 
             // Initialize with selected symbol
             await algoRunnerViewModel.InitializeAsync(row);
@@ -885,6 +940,13 @@ public partial class QuoteViewModel : ObservableObject, IDisposable
         try
         {
             _watchlistService.WatchlistsChanged -= OnWatchlistsChanged;
+        }
+        catch { }
+
+        try
+        {
+            _newsHeadlineService.HeadlineUpdated -= OnHeadlineUpdated;
+            _newsHeadlineService.SyncSymbols(Array.Empty<string>());
         }
         catch { }
 

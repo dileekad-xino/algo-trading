@@ -10,6 +10,7 @@ using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Globalization;
 using System.IO;
+using System.Text.RegularExpressions;
 
 
 namespace MarketScanner.Services.Ibkr;
@@ -46,6 +47,8 @@ public sealed class IbkrGatewayService : EWrapper, IScanner, IMarketDataService,
     private static readonly TimeSpan ScannerRequestTimeout = TimeSpan.FromSeconds(40);
     private static readonly TimeSpan ScannerQuietPeriod = TimeSpan.FromMilliseconds(1000);
     private static readonly TimeSpan CallbackStaleThreshold = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan RecentNewsWindow = TimeSpan.FromHours(6);
+    private const int HistoricalNewsLimit = 5;
 
     private readonly ILogger<IbkrGatewayService> _logger;
     private readonly IConfiguration _config;
@@ -96,6 +99,7 @@ public sealed class IbkrGatewayService : EWrapper, IScanner, IMarketDataService,
     private readonly ConcurrentDictionary<string, SnapshotRow> _snapshots = new();
     private readonly ConcurrentDictionary<string, long> _averageVolumes = new();
     private int _nextManualTickerId = 20000; // Separate counter for manually added symbols (scanner uses 10000-19999)
+    private int _nextNewsTickerId = 30000;
 
     // Historical data tracking
     private readonly ConcurrentDictionary<int, string> _histReqToSymbol = new();
@@ -118,6 +122,18 @@ public sealed class IbkrGatewayService : EWrapper, IScanner, IMarketDataService,
     private readonly ConcurrentDictionary<int, List<Candlestick>> _histBarsBuffers = new();
     private readonly ConcurrentDictionary<int, (string Symbol, string Interval)> _histBarsMetadata = new();
 
+    // News tracking
+    private readonly ConcurrentDictionary<string, byte> _newsSubscriptions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _newsSymbolToTickerId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<int, string> _newsTickerIdToSymbol = new();
+    private readonly ConcurrentDictionary<string, int> _symbolConIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<int, TaskCompletionSource<int>> _contractConIdWaiters = new();
+    private readonly ConcurrentDictionary<int, string> _contractConIdReqToSymbol = new();
+    private readonly ConcurrentDictionary<int, string> _historicalNewsReqToSymbol = new();
+    private readonly ConcurrentDictionary<string, byte> _historicalNewsInFlight = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _newsProviderLock = new();
+    private string _newsProviderCodes = string.Empty;
+
     // Tick stream for live updates
     private readonly Subject<TickData> _tickSubject = new();
     public IObservable<TickData> TickStream => _tickSubject.AsObservable();
@@ -129,6 +145,7 @@ public sealed class IbkrGatewayService : EWrapper, IScanner, IMarketDataService,
 
     // Scanner events
     public event Func<ScannerSnapshot, Task>? SnapshotReceived;
+    public event EventHandler<NewsHeadlineItem>? NewsHeadlineReceived;
 
     private class MarketState
     {
@@ -241,11 +258,13 @@ public sealed class IbkrGatewayService : EWrapper, IScanner, IMarketDataService,
 
             // CRITICAL: Set to DELAYED immediately after connection
             client.reqMarketDataType(3); // 3 = DELAYED
+            client.reqNewsProviders();
             _logger.LogInformation("Connected to IBKR (nextValidId={Id}, mode=DELAYED)", _nextValidId);
             PublishConnectionState(isConnected: true, "Connected");
             StopReconnectLoop();
 
             RestoreMarketDataSubscriptions(includeHistorical: false);
+            RestoreNewsSubscriptions();
         }
         finally
         {
@@ -493,6 +512,27 @@ public sealed class IbkrGatewayService : EWrapper, IScanner, IMarketDataService,
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to restore market data subscription for {Symbol} (tickerId={TickerId})", symbol, tickerId);
+            }
+        }
+    }
+
+    private void RestoreNewsSubscriptions()
+    {
+        if (!IsConnected || _client == null)
+        {
+            return;
+        }
+
+        foreach (var symbol in _newsSubscriptions.Keys)
+        {
+            try
+            {
+                RequestLiveNewsSubscription(symbol);
+                _ = RequestRecentHistoricalNewsAsync(symbol, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to restore news subscription for {Symbol}", symbol);
             }
         }
     }
@@ -1461,6 +1501,309 @@ public sealed class IbkrGatewayService : EWrapper, IScanner, IMarketDataService,
         }
     }
 
+    public async Task EnsureNewsSubscriptionAsync(string symbol, CancellationToken ct = default)
+    {
+        var normalizedSymbol = NormalizeSymbol(symbol);
+        if (string.IsNullOrWhiteSpace(normalizedSymbol))
+        {
+            return;
+        }
+
+        await EnsureConnectedAsync(ct).ConfigureAwait(false);
+
+        if (!_newsSubscriptions.TryAdd(normalizedSymbol, 0))
+        {
+            return;
+        }
+
+        try
+        {
+            RequestLiveNewsSubscription(normalizedSymbol);
+            await RequestRecentHistoricalNewsAsync(normalizedSymbol, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            _newsSubscriptions.TryRemove(normalizedSymbol, out _);
+            throw;
+        }
+    }
+
+    public void CancelNewsSubscription(string symbol)
+    {
+        var normalizedSymbol = NormalizeSymbol(symbol);
+        if (string.IsNullOrWhiteSpace(normalizedSymbol))
+        {
+            return;
+        }
+
+        _newsSubscriptions.TryRemove(normalizedSymbol, out _);
+        _historicalNewsInFlight.TryRemove(normalizedSymbol, out _);
+
+        if (_newsSymbolToTickerId.TryRemove(normalizedSymbol, out var tickerId))
+        {
+            _newsTickerIdToSymbol.TryRemove(tickerId, out _);
+
+            try
+            {
+                if (IsConnected && _client != null)
+                {
+                    _client.cancelMktData(tickerId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to cancel news subscription for {Symbol}", normalizedSymbol);
+            }
+        }
+    }
+
+    private void RequestLiveNewsSubscription(string symbol)
+    {
+        if (!IsConnected || _client == null)
+        {
+            return;
+        }
+
+        int tickerId;
+        var hadExistingTickerId = _newsSymbolToTickerId.TryGetValue(symbol, out var existingTickerId);
+        if (hadExistingTickerId)
+        {
+            tickerId = existingTickerId;
+        }
+        else
+        {
+            tickerId = Interlocked.Increment(ref _nextNewsTickerId);
+            _newsSymbolToTickerId[symbol] = tickerId;
+        }
+        var contract = new Contract
+        {
+            Symbol = symbol,
+            SecType = "STK",
+            Exchange = "SMART",
+            Currency = "USD"
+        };
+
+        _newsTickerIdToSymbol[tickerId] = symbol;
+
+        try
+        {
+            _client.reqMktData(tickerId, contract, "292", false, false, null);
+            _logger.LogInformation("Subscribed to IBKR news ticks for {Symbol} (tickerId={TickerId})", symbol, tickerId);
+        }
+        catch (Exception ex)
+        {
+            if (!hadExistingTickerId)
+            {
+                _newsSymbolToTickerId.TryRemove(symbol, out _);
+                _newsTickerIdToSymbol.TryRemove(tickerId, out _);
+            }
+            _logger.LogWarning(ex, "Failed to subscribe to IBKR news ticks for {Symbol}", symbol);
+            throw;
+        }
+    }
+
+    private async Task RequestRecentHistoricalNewsAsync(string symbol, CancellationToken ct)
+    {
+        if (!_historicalNewsInFlight.TryAdd(symbol, 0))
+        {
+            return;
+        }
+
+        try
+        {
+            var conId = await ResolveConIdAsync(symbol, ct).ConfigureAwait(false);
+            var providerCodes = await GetOrRequestNewsProviderCodesAsync(ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(providerCodes))
+            {
+                _logger.LogDebug("Skipping historical news request for {Symbol} because no provider codes are available", symbol);
+                return;
+            }
+
+            var reqId = GetNextReqId();
+            _historicalNewsReqToSymbol[reqId] = symbol;
+
+            var endTimeUtc = DateTime.UtcNow;
+            var startTimeUtc = endTimeUtc - RecentNewsWindow;
+
+            _client.reqHistoricalNews(
+                reqId,
+                conId,
+                providerCodes,
+                startTimeUtc.ToString("yyyyMMdd-HH:mm:ss", CultureInfo.InvariantCulture),
+                endTimeUtc.ToString("yyyyMMdd-HH:mm:ss", CultureInfo.InvariantCulture),
+                HistoricalNewsLimit,
+                null);
+
+            _logger.LogInformation("Requested recent historical headlines for {Symbol} (reqId={ReqId}, conId={ConId})", symbol, reqId, conId);
+        }
+        catch (Exception ex)
+        {
+            _historicalNewsInFlight.TryRemove(symbol, out _);
+            _logger.LogDebug(ex, "Historical headline request failed for {Symbol}", symbol);
+        }
+    }
+
+    private async Task<int> ResolveConIdAsync(string symbol, CancellationToken ct)
+    {
+        if (_symbolConIds.TryGetValue(symbol, out var conId))
+        {
+            return conId;
+        }
+
+        var reqId = GetNextReqId();
+        var waiter = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _contractConIdWaiters[reqId] = waiter;
+        _contractConIdReqToSymbol[reqId] = symbol;
+
+        using var registration = ct.Register(() => waiter.TrySetCanceled(ct));
+
+        _client.reqContractDetails(reqId, new Contract
+        {
+            Symbol = symbol,
+            SecType = "STK",
+            Exchange = "SMART",
+            Currency = "USD"
+        });
+
+        return await waiter.Task.ConfigureAwait(false);
+    }
+
+    private async Task<string> GetOrRequestNewsProviderCodesAsync(CancellationToken ct)
+    {
+        var providerCodes = GetNewsProviderCodes();
+        if (!string.IsNullOrWhiteSpace(providerCodes))
+        {
+            return providerCodes;
+        }
+
+        try
+        {
+            _client?.reqNewsProviders();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to request IBKR news providers");
+        }
+
+        var ready = await WaitUntilAsync(
+            () => !string.IsNullOrWhiteSpace(GetNewsProviderCodes()),
+            TimeSpan.FromSeconds(2),
+            ct).ConfigureAwait(false);
+
+        return ready ? GetNewsProviderCodes() : string.Empty;
+    }
+
+    private string GetNewsProviderCodes()
+    {
+        lock (_newsProviderLock)
+        {
+            return _newsProviderCodes;
+        }
+    }
+
+    private void EmitNewsHeadline(string symbol, string headline, DateTime publishedAtUtc, string providerCode, string? articleId)
+    {
+        if (string.IsNullOrWhiteSpace(symbol) || string.IsNullOrWhiteSpace(headline))
+        {
+            return;
+        }
+
+        var normalizedSymbol = NormalizeSymbol(symbol);
+        var cleanedHeadline = SanitizeHeadlineText(headline, normalizedSymbol);
+        if (string.IsNullOrWhiteSpace(cleanedHeadline))
+        {
+            return;
+        }
+
+        var item = new NewsHeadlineItem(
+            normalizedSymbol,
+            cleanedHeadline,
+            publishedAtUtc,
+            providerCode ?? string.Empty,
+            string.IsNullOrWhiteSpace(articleId) ? null : articleId.Trim());
+
+        try
+        {
+            NewsHeadlineReceived?.Invoke(this, item);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to publish news headline for {Symbol}", symbol);
+        }
+    }
+
+    private static string SanitizeHeadlineText(string headline, string symbol)
+    {
+        var cleaned = headline.Trim();
+
+        // Some IBKR news feeds prepend metadata blocks like:
+        // {A:800015:L:en:Kn/a:C:0.998...}
+        cleaned = Regex.Replace(cleaned, @"^\{[^}]+\}", string.Empty);
+
+        // Feeds may append the ticker using a delimiter like " > UGRO".
+        if (!string.IsNullOrWhiteSpace(symbol))
+        {
+            cleaned = Regex.Replace(
+                cleaned,
+                $@"\s+>\s+{Regex.Escape(symbol)}\s*$",
+                string.Empty,
+                RegexOptions.IgnoreCase);
+        }
+
+        // Collapse odd whitespace that can be introduced by provider payloads.
+        cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
+
+        return cleaned;
+    }
+
+    private static string NormalizeSymbol(string? symbol)
+    {
+        return string.IsNullOrWhiteSpace(symbol)
+            ? string.Empty
+            : symbol.Trim().ToUpperInvariant();
+    }
+
+    private static DateTime ParseTickNewsTimestamp(long timeStamp)
+    {
+        return timeStamp > 9999999999
+            ? DateTimeOffset.FromUnixTimeMilliseconds(timeStamp).UtcDateTime
+            : DateTimeOffset.FromUnixTimeSeconds(timeStamp).UtcDateTime;
+    }
+
+    private static bool TryParseHistoricalNewsTimestamp(string value, out DateTime publishedAtUtc)
+    {
+        string[] formats =
+        {
+            "yyyyMMdd-HH:mm:ss",
+            "yyyyMMdd HH:mm:ss",
+            "yyyy-MM-dd HH:mm:ss"
+        };
+
+        if (DateTime.TryParseExact(
+                value,
+                formats,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+        {
+            publishedAtUtc = parsed;
+            return true;
+        }
+
+        if (DateTime.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out parsed))
+        {
+            publishedAtUtc = parsed;
+            return true;
+        }
+
+        publishedAtUtc = DateTime.UtcNow;
+        return false;
+    }
+
     /// <summary>
     /// Requests historical bars for technical indicator calculations (e.g., RSI).
     /// Returns full bar data (OHLCV) in chronological order (oldest to newest).
@@ -2288,6 +2631,7 @@ public sealed class IbkrGatewayService : EWrapper, IScanner, IMarketDataService,
             {
                 _logger.LogInformation("IBKR data lost/recovered notification ({Code}), restoring subscriptions", errorCode);
                 RestoreMarketDataSubscriptions(includeHistorical: false);
+                RestoreNewsSubscriptions();
             }
         }
 
@@ -2363,6 +2707,17 @@ public sealed class IbkrGatewayService : EWrapper, IScanner, IMarketDataService,
         {
             _historicalInFlight.TryRemove(histSymbol, out _);
         }
+
+        if (_historicalNewsReqToSymbol.TryRemove(id, out var newsSymbol))
+        {
+            _historicalNewsInFlight.TryRemove(newsSymbol, out _);
+        }
+
+        if (_contractConIdWaiters.TryRemove(id, out var contractWaiter))
+        {
+            contractWaiter.TrySetException(new Exception($"IBKR Error {errorCode}: {errorMsg}"));
+            _contractConIdReqToSymbol.TryRemove(id, out _);
+        }
     }
 
     public void connectAck()
@@ -2414,9 +2769,42 @@ public sealed class IbkrGatewayService : EWrapper, IScanner, IMarketDataService,
     public void updatePortfolio(Contract contract, double position, double marketPrice, double marketValue, double averageCost, double unrealisedPNL, double realisedPNL, string accountName) { }
     public void updateAccountTime(string timestamp) { }
     public void accountDownloadEnd(string account) { }
-    public void contractDetails(int reqId, ContractDetails contractDetails) { }
-    public void bondContractDetails(int reqId, ContractDetails contractDetails) { }
-    public void contractDetailsEnd(int reqId) { }
+    public void contractDetails(int reqId, ContractDetails contractDetails)
+    {
+        TouchCallback();
+
+        if (!_contractConIdWaiters.TryGetValue(reqId, out var waiter))
+        {
+            return;
+        }
+
+        var symbol = NormalizeSymbol(_contractConIdReqToSymbol.GetValueOrDefault(reqId) ?? contractDetails.Contract?.Symbol);
+        var conId = contractDetails.Contract?.ConId ?? 0;
+        if (string.IsNullOrWhiteSpace(symbol) || conId <= 0)
+        {
+            return;
+        }
+
+        _symbolConIds[symbol] = conId;
+        waiter.TrySetResult(conId);
+    }
+    public void bondContractDetails(int reqId, ContractDetails contractDetails)
+    {
+        this.contractDetails(reqId, contractDetails);
+    }
+    public void contractDetailsEnd(int reqId)
+    {
+        TouchCallback();
+
+        if (_contractConIdWaiters.TryRemove(reqId, out var waiter) &&
+            waiter.Task.Status is TaskStatus.Created or TaskStatus.WaitingForActivation or TaskStatus.WaitingForChildrenToComplete or TaskStatus.WaitingToRun or TaskStatus.Running)
+        {
+            var symbol = _contractConIdReqToSymbol.GetValueOrDefault(reqId, "unknown");
+            waiter.TrySetException(new InvalidOperationException($"IBKR did not return a contract identifier for {symbol}."));
+        }
+
+        _contractConIdReqToSymbol.TryRemove(reqId, out _);
+    }
     public void execDetails(int reqId, Contract contract, Execution execution) { }
     public void execDetailsEnd(int reqId) { }
     public void updateMktDepth(int tickerId, int position, int operation, int side, double price, int size) { }
@@ -2534,13 +2922,58 @@ public sealed class IbkrGatewayService : EWrapper, IScanner, IMarketDataService,
         }
     }
     public void mktDepthExchanges(DepthMktDataDescription[] depthMktDataDescriptions) { }
-    public void tickNews(int tickerId, long timeStamp, string providerCode, string articleId, string headline, string extraData) { }
+    public void tickNews(int tickerId, long timeStamp, string providerCode, string articleId, string headline, string extraData)
+    {
+        TouchCallback();
+
+        if (_newsTickerIdToSymbol.TryGetValue(tickerId, out var symbol))
+        {
+            EmitNewsHeadline(symbol, headline, ParseTickNewsTimestamp(timeStamp), providerCode, articleId);
+        }
+    }
     public void smartComponents(int reqId, Dictionary<int, KeyValuePair<string, char>> theMap) { }
     public void tickReqParams(int tickerId, double minTick, string bboExchange, int snapshotPermissions) { }
-    public void newsProviders(NewsProvider[] newsProviders) { }
+    public void newsProviders(NewsProvider[] newsProviders)
+    {
+        TouchCallback();
+
+        var providerCodes = newsProviders
+            .Select(provider => provider.ProviderCode)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        lock (_newsProviderLock)
+        {
+            _newsProviderCodes = string.Join("+", providerCodes);
+        }
+    }
     public void newsArticle(int requestId, int articleType, string articleText) { }
-    public void historicalNews(int requestId, string time, string providerCode, string articleId, string headline) { }
-    public void historicalNewsEnd(int requestId, bool hasMore) { }
+    public void historicalNews(int requestId, string time, string providerCode, string articleId, string headline)
+    {
+        TouchCallback();
+
+        if (!_historicalNewsReqToSymbol.TryGetValue(requestId, out var symbol))
+        {
+            return;
+        }
+
+        if (!TryParseHistoricalNewsTimestamp(time, out var publishedAtUtc))
+        {
+            _logger.LogDebug("Could not parse historical news timestamp for {Symbol}: {Time}", symbol, time);
+        }
+
+        EmitNewsHeadline(symbol, headline, publishedAtUtc, providerCode, articleId);
+    }
+    public void historicalNewsEnd(int requestId, bool hasMore)
+    {
+        TouchCallback();
+
+        if (_historicalNewsReqToSymbol.TryRemove(requestId, out var symbol))
+        {
+            _historicalNewsInFlight.TryRemove(symbol, out _);
+        }
+    }
     public void headTimestamp(int reqId, string headTimestamp) { }
     public void histogramData(int reqId, HistogramEntry[] data) { }
     public void rerouteMktDataReq(int reqId, int conId, string exchange) { }

@@ -120,6 +120,7 @@ namespace MarketScanner
             builder.Services.AddSingleton<IScanner>(sp => sp.GetRequiredService<IbkrGatewayService>());
             builder.Services.AddSingleton<IMarketDataService>(sp => sp.GetRequiredService<IbkrGatewayService>());
             builder.Services.AddSingleton<IInstrumentMetadataProvider, IbkrInstrumentMetadataProvider>();
+            builder.Services.AddSingleton<INewsHeadlineService, NewsHeadlineService>();
 
             // Symbol Search Service
             builder.Services.AddSingleton<ISymbolSearchService>(sp =>
@@ -197,6 +198,7 @@ namespace MarketScanner
                     sp.GetRequiredService<IWatchlistService>(),
                     sp.GetRequiredService<ITradeService>(),
                     sp.GetRequiredService<IRsiSettingsService>(),
+                    sp.GetRequiredService<INewsHeadlineService>(),
                     sp.GetRequiredService<IAlgoStrategy>(),
                     sp.GetRequiredService<Services.AlgoRunnerManagerService>(),
                     sp.GetRequiredService<IConfirmationDialogService>(),
